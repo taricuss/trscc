@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-blue.svg)][pyproject]
-[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.XXXXX-blue)][zenodo]
+[![Zenodo](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.22013916-blue)][zenodo]
 
 A portable, single-feature engineered covariate for **prime editing efficiency prediction**.
 
@@ -204,16 +204,16 @@ Please cite the paper if you use TRCSS in your own work.
   note    = {Submitted to NAR Methods}
 }
 
-@software{trcss-zenodo,
+@software{trcss-,
   author    = {TRCSS Contributors},
   title   = {TRCSS software v1.0.0-submission},
   year    = {2026},
-  doi     = {10.5281/zenodo.XXXXX},
-  url     = {https://doi.org/10.5281/zenodo.XXXXX}
+  doi     = {10.5281/zenodo.22013916},
+  url     = {https://doi.org/10.5281/zenodo.22013916}
 }
 ```
 
 [paper-link]: https://doi.org/PENDING
-[zenodo]: https://doi.org/10.5281/zenodo.XXXXX
+[zenodo]: https://doi.org/10.5281/zenodo.22013916
 [pyproject]: pyproject.toml
 [vignette]: docs/vignette.md
