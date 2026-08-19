@@ -1,0 +1,22 @@
+# CITATION
+
+When using the TRCSS software or results in published work, please cite:
+
+**Manuscript (NAR Methods submission):**
+> TRCSS Contributors (2026). "TRCSS: Transcription-Replication Context Score
+> for Improved Prime Editing Efficiency Prediction." *Nucleic Acids Research
+> Methods*. Submitted. DOI: PENDING.
+
+**Software archive:**
+> TRCSS Contributors (2026). *TRCSS v1.0.0-submission*. Zenodo.
+> https://doi.org/10.5281/zenodo.XXXXX
+
+For BibTeX entries see [CITATION.cff](CITATION.cff) or `README.md`.
+
+---
+
+**Underlying datasets.** If you rely on the 146-site arrayed validation panel,
+additionally cite the original source:
+> Mathis N, Allam A, Kissling L, et al. (2025). Machine learning prediction of
+> prime editing efficiency across diverse chromatin contexts. *Nature
+> Biotechnology*, 43(5):712–719. Data: GEO GSE270866 (CC BY 4.0).

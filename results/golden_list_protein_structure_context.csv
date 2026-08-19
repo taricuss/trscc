@@ -1,0 +1,11 @@
+gene,hgvs_c,uniprot,alphafold_id,aa_position,domain,domain_details,plddt
+MSH2,NM_000251.3(MSH2):c.738del (p.Gly247fs),P43246,AF-P43246-F1,247,Linker region (Mismatch recognition domain → Lever domain),Between mismatch recognition (residues 1-127) and lever domain (128-296),High (pLDDT > 90)
+MSH2,NM_000251.3(MSH2):c.1520del (p.Pro507fs),P43246,AF-P43246-F1,507,Clamp domain,Residues 297-405: clamp domain; this variant is in the ATPase domain (419-650) region,High (pLDDT > 90)
+MSH2,NM_000251.3(MSH2):c.2018del (p.Gly673fs),P43246,AF-P43246-F1,673,MSH6 interaction domain,Residues 651-934: heterodimerization interface with MSH6,High (pLDDT > 90)
+MSH2,NM_000251.3(MSH2):c.2545del (p.Leu849fs),P43246,AF-P43246-F1,849,MSH6 interaction domain,Residues 651-934: heterodimerization interface with MSH6,High (pLDDT > 90)
+PMS2,NM_000535.7(PMS2):c.741del (p.Ser248fs),P54278,AF-P54278-F1,248,ATPase domain,Residues 1-370: N-terminal ATPase domain,High (pLDDT > 90)
+MLH1,NM_000249.4(MLH1):c.1609del (p.Gln537fs),P40692,AF-P40692-F1,537,Linker region (ATPase → endonuclease domain),Between ATPase (1-344) and endonuclease (500-756) domains; PMS2 interaction interface,High (pLDDT > 90)
+MSH6,NM_000179.3(MSH6):c.2327_2336del (p.Gln776fs),P52701,AF-P52701-F1,776,Connector/ATPase domain,Residues 362-657: connector; this variant is in the ATPase and dimerization region,High (pLDDT > 90)
+MSH6,NM_000179.3(MSH6):c.2328del (p.Gln776fs),P52701,AF-P52701-F1,776,Connector/ATPase domain,Residues 362-657: connector; this variant is in the ATPase and dimerization region,High (pLDDT > 90)
+MSH6,NM_000179.3(MSH6):c.2933del (p.Gln978fs),P52701,AF-P52701-F1,978,MSH2 interaction domain,Residues 900-1360: heterodimerization interface with MSH2,High (pLDDT > 90)
+MSH6,NM_000179.3(MSH6):c.3622_3623insGAGAG (p.Ser1208Ter),P52701,AF-P52701-F1,1208,MSH2 interaction domain,Residues 900-1360: heterodimerization interface with MSH2,High (pLDDT > 90)

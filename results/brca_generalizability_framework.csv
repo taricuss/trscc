@@ -1,0 +1,3 @@
+gene,chromosome,strand,tx_dir,description
+BRCA1,17,-1,-1,BRCA1 DNA repair associated
+BRCA2,13,+1,1,BRCA2 DNA repair associated

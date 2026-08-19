@@ -1,0 +1,8 @@
+gene,hgvs_c,hgvs_p,class,family_count,variant_type,chromosome,position,ref,alt
+MLH1,c.1852_1854delAAG,p.Lys618del,5,150,deletion,3,37069680,AAG,-
+MLH1,c.350C>T,p.Thr117Met,5,89,substitution,3,37073624,C,T
+MLH1,c.454+1G>A,splice_site,5,67,substitution,3,37073299,G,A
+MSH2,c.942+3A>T,splice_site,4,45,substitution,2,47636876,A,T
+MSH2,c.1076_1078del,p.Lys359del,5,78,deletion,2,47636312,CTT,-
+MSH6,c.3261insC,p.Pro1088Leufs*5,5,34,insertion,2,48033428,C,CC
+MSH6,c.3439_3440del,p.Met1147Valfs*12,5,28,deletion,2,48032856,AG,-

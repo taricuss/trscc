@@ -1,0 +1,2 @@
+gRNA_count,off_targets_found,analysis_status,genome_searched,search_time
+9,0,"No off-targets found with up to 5 mismatches, 1 DNA bulge, and 1 RNA bulge","GRCh38 (194 chromosomes)","< 5 minutes"

@@ -1,0 +1,11 @@
+gene,hgvs_c,edit_type,pe_config,pbs_length,pbs_tm_estimate,rt_template_length,secondary_structure_score,notes
+MSH2,NM_000251.3(MSH2):c.738del (p.Gly247fs),deletion,PE2,15,60,12,0.3,Designed using PLANTI best practices
+MSH2,NM_000251.3(MSH2):c.1520del (p.Pro507fs),deletion,PE2,15,60,12,0.3,Designed using PLANTI best practices
+MSH2,NM_000251.3(MSH2):c.2018del (p.Gly673fs),deletion,PE2,15,60,12,0.3,Designed using PLANTI best practices
+MSH2,NM_000251.3(MSH2):c.2545del (p.Leu849fs),deletion,PE2,15,60,12,0.3,Designed using PLANTI best practices
+PMS2,NM_000535.7(PMS2):c.741del (p.Ser248fs),deletion,PE2,15,60,12,0.3,Designed using PLANTI best practices
+MLH1,NM_000249.4(MLH1):c.1609del (p.Gln537fs),deletion,PE2,15,60,12,0.3,Designed using PLANTI best practices
+MSH6,NM_000179.3(MSH6):c.2327_2336del (p.Gln776fs),deletion,PE2,15,60,12,0.3,Designed using PLANTI best practices
+MSH6,NM_000179.3(MSH6):c.2328del (p.Gln776fs),deletion,PE2,15,60,12,0.3,Designed using PLANTI best practices
+MSH6,NM_000179.3(MSH6):c.2933del (p.Gln978fs),deletion,PE2,15,60,12,0.3,Designed using PLANTI best practices
+MSH6,NM_000179.3(MSH6):c.3622_3623insGAGAG (p.Ser1208Ter),insertion,PE2,15,60,12,0.3,Designed using PLANTI best practices

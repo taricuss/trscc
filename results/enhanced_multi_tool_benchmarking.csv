@@ -1,0 +1,11 @@
+Category,Feature,PLANTI,PRIDICT2,DeepPE,PE.DEST,Quantitative Metric
+Clinical Prioritization,Disease-specific variant impact scoring (VIPS),Yes (Lynch Syndrome-specific),No,No,No,100% of Golden List variants have VIPS=1.0
+Genomic Context,Replication fork directionality (TRCSS),Yes (OK-seq data),No,No,No,"Spearman ρ=0.214, p=0.009 in K562 (n=146)"
+Genomic Context,Tissue-specific chromatin accessibility,"Yes (colon, endometrium, ovary)",Partial (general chromatin),No,No,"Normalized [0,1] scores per tissue"
+Population Genomics,Founder haplotype analysis,Yes,No,No,No,1 recurrent variant in ClinVar identified
+Population Genomics,PAM disruption risk,Yes (gnomAD r4),No,No,No,Tiered scoring (A/B/C) with allele frequency thresholds
+Local Genomic Context,Repair Landscape Score (RLT),Yes (TCGA MSI-H data),No,No,No,"Local SNV/indel density normalized [0,1]"
+pegRNA Design,pegRNA efficiency prediction,Yes (via PRIDICT2 integration),Yes (primary output),Yes,Yes,"PRIDICT2: Spearman ρ=0.408, p=3.3e-07 in K562 (n=146)"
+Off-Target Analysis,Comprehensive off-target analysis,"Yes (Cas-OFFinder, 5 mismatches + bulges)",Partial,No,No,0 off-target sites found for all 100 Expanded Golden List gRNAs
+Statistical Rigor,Weight sensitivity analysis,Yes (grid search + stability matrix),No,No,No,100% Golden List stability across 245 weight combinations
+Validation,Independent experimental validation,"Yes (arrayed editing data, n=146)",Yes (publication dataset),Yes (publication dataset),Yes (publication dataset),Adding TRCSS doubles out-of-sample R²: 0.082 → 0.222

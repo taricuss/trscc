@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+title: "TRCSS: Transcription-Replication Context Score"
+message: "If you use this software, please cite the accompanying NAR Methods manuscript."
+type: software
+authors:
+  - name: "TRCSS Contributors"
+repository-code: "https://github.com/example/trcss"
+license: MIT
+version: 1.0.0
+date-released: 2026-07-30
+doi: "10.5281/zenodo.XXXXX"
+abstract: >
+  TRCSS (Transcription-Replication Context Score) is a portable,
+  single-feature engineered covariate for prime editing efficiency
+  prediction. It captures the joint geometry of replication fork
+  directionality, transcription strand orientation, and distance to the
+  nearest transcription start site. TRCSS is designed as a drop-in feature
+  for pipelines that do not already expose fork direction, transcription
+  direction, or TSS distance as separate explicit covariates.
+keywords:
+  - prime-editing
+  - crispr
+  - genome-editing
+  - bioinformatics
+  - fork-directionality
+  - ok-seq
+  - replication-transcription-conflict
+references:
+  - type: article
+    title: >
+      TRCSS: Transcription-Replication Context Score for Improved Prime
+      Editing Efficiency Prediction
+    journal: Nucleic Acids Research
+    year: 2026
+    doi: PENDING

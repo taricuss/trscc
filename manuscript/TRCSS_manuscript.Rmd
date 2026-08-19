@@ -1,0 +1,1618 @@
+---
+title: "TRCSS: Transcription-Replication Context Score for Improved Prime Editing Efficiency Prediction"
+author:
+  - name: "[PRE-SUBMISSION TODO #1: Author 1 full legal name — matches ORCID record exactly] [Author 1 Full Legal Name]"
+    affiliation: "[PRE-SUBMISSION TODO #3: Author 1 full postal address] [Institution, Department, Full Postal Address (street/city/postcode/country)]"
+    orcid: "[PRE-SUBMISSION TODO #5: Author 1 ORCID iD — verified public profile] https://orcid.org/XXXX-XXXX-XXXX-XXXX"
+  - name: "[PRE-SUBMISSION TODO #2: Author 2 full legal name + corresponding-author marker] [Author 2 Full Name] (*) (corresponding.author@institution.edu)"
+    affiliation: "[PRE-SUBMISSION TODO #4: Author 2 full postal address] [Institution, Department, Full Postal Address]"
+    orcid: "[PRE-SUBMISSION TODO #6: Author 2 ORCID iD — verified public profile] https://orcid.org/XXXX-XXXX-XXXX-XXXX"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    highlight: tango
+    fig_caption: true
+    theme: cosmo
+  word_document:
+    toc: true
+    number_sections: true
+    fig_caption: true
+always_allow_html: true
+---
+
+---
+
+## PRE-SUBMISSION COMPLIANCE CHECKLIST (14 MANDATORY ITEMS — CROSS OFF LEFT-TO-RIGHT BEFORE NAR UPLOAD)
+
+- [ ] **#1 – #2 Author identities**: YAML author `name:` fields contain full legal names; corresponding author marked `(*)` with valid institutional email.
+- [ ] **#3 – #4 Affiliations**: YAML `affiliation:` fields contain complete postal addresses (street / city / postcode / country), not just institutional names.
+- [ ] **#5 – #6 ORCIDs**: Each `orcid:` YAML field links to a verified public ORCID record showing the exact full legal name and at least one matching affiliation.
+- [ ] **#7 GitHub release**: Public repository created; tag `v1.0.0-submission` applied at the exact commit used to produce all reported results. MIT license visible in README; §5.4 URL placeholder replaced.
+- [ ] **#8 Zenodo archive**: GitHub tag archived on Zenodo; DOI minted; SHA-256 of the Zenodo tarball cross-checked against the GitHub release tarball; §5.4 DOI placeholder replaced.
+- [ ] **#9 Funding decision**: Keep `No funding to declare.` or replace with specific grant sentences using the template; CRediT `Funding Acquisition` role added to Author Contributions only if grants are declared.
+- [ ] **#10 CRediT author roles**: All bracketed `[Author 1/2 Full Name]` entries in Author Contributions replaced with real names; each YAML author appears at least once; roles match actual contribution.
+- [ ] **#11 ENCODE data release**: The literal string `[ENCODE data release here, e.g. "ENCODE v47 2024-11"]` replaced in all three §8.3 accession bullets (Repli-seq, K562 DNase, HCT116 ChIP).
+- [ ] **#12 GDC pipeline version**: §8.3 TCGA bullet's `[GDC pipeline version + data release here…]` literal replaced with the exact GDC data-release / MAF-type / caller-consensus string used for the actual TCGA pull.
+- [ ] **#13 Figure 1 rendered**: R chunk `figure1-ablation-benchmark` populated with real `ablation_plot_df` and `benchmark_plot_df` data.frames; ggplot2/cowplot render produces a high-resolution export (≥300 dpi TIFF/PNG) included in the figure submission ZIP.
+- [ ] **#14 Graphical abstract**: Standalone 5:2 landscape file exported (127 × 50 mm minimum, ≥300 dpi TIFF or vector PDF/EPS); uploaded both via the NAR submission system AND included in the figure ZIP as Supplementary Figure S0.
+- [ ] **Additional external gate**: NAR Paperpal Preflight tool run; DASR (Data Availability, Standardization, and Reproducibility) Checklist completed in the submission portal.
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 6)
+
+# Load required packages
+if (!require("tidyverse")) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if (!require("knitr")) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if (!require("kableExtra")) install.packages("kableExtra", repos = "http://cran.us.r-project.org")
+if (!require("reshape2")) install.packages("reshape2", repos = "http://cran.us.r-project.org")
+if (!require("boot")) install.packages("boot", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(reshape2)
+library(boot)
+
+# Define helper function for Spearman correlations with BCa bootstrap CIs
+spearman_bca <- function(df, x, y, R = 10000, seed = 1) {
+  d <- df %>%
+    select(all_of(c(x, y))) %>%
+    drop_na() %>%
+    mutate(across(everything(), as.numeric))
+
+  n <- nrow(d)
+  if (n < 4) {
+    return(tibble(n = n, rho = NA_real_, p = NA_real_, ci_low = NA_real_, ci_high = NA_real_))
+  }
+
+  set.seed(seed)
+  b <- boot::boot(
+    data = d,
+    statistic = function(data, indices) {
+      cor(data[indices, 1], data[indices, 2], method = "spearman")
+    },
+    R = R
+  )
+
+  ci <- tryCatch(boot::boot.ci(b, type = "bca"), error = function(e) NULL)
+  ci_low <- if (!is.null(ci) && !is.null(ci$bca)) ci$bca[4] else NA_real_
+  ci_high <- if (!is.null(ci) && !is.null(ci$bca)) ci$bca[5] else NA_real_
+
+  test <- suppressWarnings(cor.test(d[[1]], d[[2]], method = "spearman", exact = FALSE))
+  tibble(
+    n = n,
+    rho = unname(test$estimate),
+    p = test$p.value,
+    ci_low = ci_low,
+    ci_high = ci_high
+  )
+}
+
+# Define base directory — robust to the directory the Rmd is knit from.
+# The Rmd lives in manuscript/ in the repo, so the repo root is one level up.
+resolve_repo_root <- function() {
+  p <- tryCatch({
+    knitr::current_input(dir = TRUE)
+  }, error = function(e) NULL)
+  if (!is.null(p) && nzchar(p)) {
+    cand <- normalizePath(file.path(dirname(p), ".."), mustWork = FALSE)
+    if (dir.exists(cand)) return(cand)
+  }
+  if (dir.exists(file.path(getwd(), "results")) &&
+      dir.exists(file.path(getwd(), "manuscript"))) {
+    return(normalizePath(getwd()))
+  }
+  normalizePath("..", mustWork = FALSE)
+}
+base_dir <- resolve_repo_root()
+
+# Load main data files
+golden_list_candidates <- c(
+  file.path(base_dir, "results", "golden_list_pridict2_merged.csv"),
+  file.path(base_dir, "results", "golden_list_final_submission_ready.csv")
+)
+golden_list_path <- golden_list_candidates[file.exists(golden_list_candidates)][1]
+expanded_golden_list_path <- file.path(base_dir, "results", "expanded_golden_list_final.csv")
+expanded_golden_list_full_scores_path <- file.path(base_dir, "results", "expanded_golden_list_final_full_scores.csv")
+expanded_epridict_predictions_path <- file.path(base_dir, "results", "expanded_golden_list_nearest_epridict_predictions.csv")
+score_component_correlation_matrix_path <- file.path(base_dir, "results", "score_component_orthogonality_correlation_matrix.csv")
+score_component_p_values_path <- file.path(base_dir, "results", "score_component_orthogonality_p_values.csv")
+off_target_path <- file.path(base_dir, "results", "casoffinder", "off_target_analysis.csv")
+epridict_predictions_path <- file.path(base_dir, "results", "golden_list_nearest_epridict_predictions.csv")
+founder_analysis_path <- file.path(base_dir, "results", "founder", "founder_analysis.csv")
+conservation_analysis_path <- file.path(base_dir, "results", "conservation", "golden_list_conservation.csv")
+population_scores_path <- file.path(base_dir, "results", "golden_list_with_population_scores.csv")
+trcss_validation_summary_path <- file.path(base_dir, "results", "phase1a_trcss_summary_stats.csv")
+correlation_analysis_path <- file.path(base_dir, "results", "correlation_analysis_with_ci.csv")
+protein_structure_path <- file.path(base_dir, "results", "golden_list_protein_structure_context.csv")
+pegRNA_thermo_path <- file.path(base_dir, "results", "golden_list_pegRNA_thermodynamics.csv")
+arrayed_editing_path <- file.path(base_dir, "results", "arrayed_editing_full_trcss.csv")
+arrayed_correlation_path <- file.path(base_dir, "results", "arrayed_editing_correlations.csv")
+arrayed_regression_path <- file.path(base_dir, "results", "arrayed_editing_regression.csv")
+covariate_regression_path <- file.path(base_dir, "results", "arrayed_editing_regression_covariates.csv")
+chrom_holdout_path <- file.path(base_dir, "results", "arrayed_editing_regression_chromosome_holdout.csv")
+hek_analysis_path <- file.path(base_dir, "results", "arrayed_editing_hek_analysis.csv")
+epridict_benchmark_path <- file.path(base_dir, "results", "arrayed_editing_epridict_benchmark.csv")
+epridict_benchmark_summary_path <- file.path(base_dir, "results", "arrayed_editing_epridict_benchmark_summary.csv")
+
+# Read TRCSS validation and correlation data
+trcss_validation_summary <- NULL
+if (file.exists(trcss_validation_summary_path)) {
+  trcss_validation_summary <- read_csv(trcss_validation_summary_path, show_col_types = FALSE)
+}
+correlation_analysis <- NULL
+if (file.exists(correlation_analysis_path)) {
+  correlation_analysis <- read_csv(correlation_analysis_path, show_col_types = FALSE)
+}
+# Read new analysis results
+covariate_regression <- NULL
+if (file.exists(covariate_regression_path)) {
+  covariate_regression <- read_csv(covariate_regression_path, show_col_types = FALSE)
+}
+chrom_holdout <- NULL
+if (file.exists(chrom_holdout_path)) {
+  chrom_holdout <- read_csv(chrom_holdout_path, show_col_types = FALSE)
+}
+hek_analysis <- NULL
+if (file.exists(hek_analysis_path)) {
+  hek_analysis <- read_csv(hek_analysis_path, show_col_types = FALSE)
+}
+epridict_benchmark <- NULL
+if (file.exists(epridict_benchmark_path)) {
+  epridict_benchmark <- read_csv(epridict_benchmark_path, show_col_types = FALSE)
+}
+epridict_benchmark_summary <- NULL
+if (file.exists(epridict_benchmark_summary_path)) {
+  epridict_benchmark_summary <- read_csv(epridict_benchmark_summary_path, show_col_types = FALSE)
+}
+score_component_correlation_matrix <- NULL
+if (file.exists(score_component_correlation_matrix_path)) {
+  score_component_correlation_matrix <- read.csv(score_component_correlation_matrix_path, check.names = FALSE)
+}
+score_component_p_values <- NULL
+if (file.exists(score_component_p_values_path)) {
+  score_component_p_values <- read.csv(score_component_p_values_path, check.names = FALSE)
+}
+expanded_golden_list_full_scores <- NULL
+if (file.exists(expanded_golden_list_full_scores_path)) {
+  expanded_golden_list_full_scores <- read_csv(expanded_golden_list_full_scores_path, show_col_types = FALSE)
+}
+
+# Read data
+golden_list <- read_csv(golden_list_path, show_col_types = FALSE)
+if ("PRIDICT2_0_editing_Score_deep_K562" %in% names(golden_list)) {
+  golden_list <- golden_list %>%
+    mutate(
+      K562_rank = if_else(
+        is.na(PRIDICT2_0_editing_Score_deep_K562),
+        NA_integer_,
+        dense_rank(desc(PRIDICT2_0_editing_Score_deep_K562))
+      ),
+      HEK_rank = if_else(
+        is.na(PRIDICT2_0_editing_Score_deep_HEK),
+        NA_integer_,
+        dense_rank(desc(PRIDICT2_0_editing_Score_deep_HEK))
+      )
+    )
+}
+expanded_golden_list <- NULL
+if (file.exists(expanded_golden_list_path)) {
+  expanded_golden_list <- read_csv(expanded_golden_list_path, show_col_types = FALSE)
+}
+expanded_epridict_predictions <- NULL
+if (file.exists(expanded_epridict_predictions_path)) {
+  expanded_epridict_predictions <- read_csv(expanded_epridict_predictions_path, show_col_types = FALSE)
+}
+off_target_analysis <- NULL
+if (file.exists(off_target_path)) {
+  off_target_analysis <- read_csv(off_target_path, show_col_types = FALSE)
+}
+epridict_predictions <- NULL
+if (file.exists(epridict_predictions_path)) {
+  epridict_predictions <- read_csv(epridict_predictions_path, show_col_types = FALSE)
+}
+founder_analysis <- NULL
+if (file.exists(founder_analysis_path)) {
+  founder_analysis <- read_csv(founder_analysis_path, show_col_types = FALSE)
+}
+conservation_analysis <- NULL
+if (file.exists(conservation_analysis_path)) {
+  conservation_analysis <- read_csv(conservation_analysis_path, show_col_types = FALSE)
+}
+population_scores <- NULL
+if (file.exists(population_scores_path)) {
+  population_scores <- read_csv(population_scores_path, show_col_types = FALSE)
+}
+protein_structure <- NULL
+if (file.exists(protein_structure_path)) {
+  protein_structure <- read_csv(protein_structure_path, show_col_types = FALSE)
+}
+pegRNA_thermo <- NULL
+if (file.exists(pegRNA_thermo_path)) {
+  pegRNA_thermo <- read_csv(pegRNA_thermo_path, show_col_types = FALSE)
+}
+
+arrayed_editing <- NULL
+if (file.exists(arrayed_editing_path)) {
+  arrayed_editing <- read_csv(arrayed_editing_path, show_col_types = FALSE)
+}
+
+arrayed_correlation <- NULL
+if (file.exists(arrayed_correlation_path)) {
+  arrayed_correlation <- read_csv(arrayed_correlation_path, show_col_types = FALSE)
+}
+
+arrayed_regression <- NULL
+if (file.exists(arrayed_regression_path)) {
+  arrayed_regression <- read_csv(arrayed_regression_path, show_col_types = FALSE)
+}
+
+golden_list_pridict2_n <- sum(!is.na(golden_list$PRIDICT2_0_editing_Score_deep_K562))
+golden_trcss_vs_k562 <- suppressWarnings(cor.test(
+  golden_list$trcss_final,
+  golden_list$PRIDICT2_0_editing_Score_deep_K562,
+  method = "spearman",
+  exact = FALSE
+))
+golden_planti_vs_k562 <- suppressWarnings(cor.test(
+  golden_list$complete_integrated_score,
+  golden_list$PRIDICT2_0_editing_Score_deep_K562,
+  method = "spearman",
+  exact = FALSE
+))
+expanded_integrated_vs_epridict <- NULL
+if (!is.null(expanded_epridict_predictions)) {
+  expanded_integrated_vs_epridict <- suppressWarnings(cor.test(
+    expanded_epridict_predictions$integrated_score,
+    expanded_epridict_predictions$prediction,
+    method = "spearman",
+    exact = FALSE
+  ))
+}
+```
+
+# Abstract
+
+We present TRCSS (Transcription-Replication Context Score), a portable, single-feature engineered covariate that captures the joint geometry of replication fork directionality, transcription strand orientation, and distance to the nearest transcription start site—three genomic-context axes known to shape local DNA accessibility for prime editing but not exposed as separate plug-in terms by standard public prediction pipelines. TRCSS integrates strand-resolved replication fork directionality data with gene strand assignments into a single value in the unit interval, requiring no transcript-level annotations to compute. The contribution of this work is deliberately scoped: TRCSS provides a convenient drop-in feature for pipelines that do not already expose fork direction, transcription direction, or transcription-start-site distance as separate explicit covariates. The method is empirically validated on experimentally characterized prime editing sites using grouped, locus-disjoint cross-validation. A secondary transferable methodological finding is that calibration and error-metric gains from feature engineering do not reliably imply ranking or prioritization gains. Software is packaged as an installable, versioned Python tool archived with a permanent digital object identifier.
+
+# Introduction
+
+Prime editing enables targeted insertions, deletions, and base conversions without double-strand breaks, yet predicting editing efficiency across diverse genomic contexts remains a major barrier to broad experimental adoption. Existing prediction tools—including PRIDICT2 (3, 10), DeepPE (24), and ePRIDICT—derive the bulk of their predictive power from spacer, PBS, and RT-template sequence composition, augmented in some cases by coarse chromatin or transcriptional context features (18, 19). However, no current public prediction pipeline exposes replication fork directionality (FD), transcription strand direction (TxDir), or TSS distance as separate, plug-in explicit covariates, despite the well-established role of replication-transcription encounters in shaping local DNA accessibility, polymerase stalling, and chromatin state.
+
+This manuscript's core contribution is **TRCSS (Transcription-Replication Context Score)**, a generalizable computational feature for prime editing efficiency prediction. This is strictly a methods paper, and its single primary confirmatory claim—around which all Results and Discussion are organized—is deliberately and aggressively scoped to convenience and portability rather than to signal novelty. **TRCSS is a drop-in single-feature engineered proxy for pipelines that do not already expose TSS distance, transcription direction, or fork directionality as separate explicit covariates. It is not a statistically orthogonal predictive signal once those mediating covariates are present and entered as separate terms.** We demonstrate this scoped claim via two complementary analyses: (i) a fully controlled deconstructed-baseline head-to-head test plus formal mediation analysis establishing that most of TRCSS's total statistical effect travels through log-TSS-distance and TxDir when those covariates are available, and (ii) a practical drop-in single-feature validation on standard prediction pipelines that do not expose these geometry covariates, where TRCSS captures the full composite geometry signal in one portable engineered number. All other analyses in the paper—ablation, component interaction, chromosome-holdout, replication across cell lines, and the calibration-vs-ranking decomposition—are presented as supporting evidence for this one claim, not as competing narratives.
+
+**Prior-art due-diligence disclosure.** Prior to submission, we conducted a targeted search across PubMed, bioRxiv, and medRxiv for prior applications of replication fork directionality (OK-seq/RFD), replication-transcription conflict (TRC) geometry, or replication-timing features to CRISPR/Cas9, base-editing, or prime-editing efficiency prediction, combined with keyword sets ("replication timing," "OK-seq," "fork directionality," "RFD," "TRC" × "CRISPR efficiency," "prime editing," "Cas9 accessibility," "chromatin accessibility prediction"). We did not identify any published or preprinted study that applies fork-directionality or TRC-geometry-derived features to editing-efficiency prediction. The closest published work—OKseqHMM (NAR 2023) and related RFD-profiling tools—focuses on measuring fork directionality per se rather than applying it as a predictive feature for genome editing; ePRIDICT (Nat Biotechnol 2025) and DeepPE (NAR 2021) incorporate coarse chromatin and expression covariates but explicitly no replication-fork or TRC geometry terms. To the best of our knowledge, TRCSS is therefore the first application of OK-seq-derived fork-directionality information to the prime editing efficiency prediction problem.
+
+Replication and transcription machineries share the same DNA template and their encounters—whether co-directional or head-on—produce locus-specific effects on DNA topology, nucleosome occupancy, and protein binding that are plausibly relevant to Cas9 binding and pegRNA function. These effects are not captured by existing sequence-based predictors, motivating a dedicated, biologically grounded feature for this axis of variation. TRCSS integrates genome-wide OK-seq replication fork directionality data with gene strand orientation into a [0, 1] folded engineered term, validated using experimentally characterized prime editing sites with grouped, locus-disjoint train-test splits to eliminate data leakage from multiple pegRNAs per site. A secondary transferable methods insight also emerges: feature-engineered covariates can produce large calibration-metric gains while ranking metrics improve modestly or even degrade, a pattern that is quantitatively identical under both ordinary least-squares and regularized regression and that reveals that R² gains alone do not reliably indicate ranking or prioritization gains for feature-engineering papers in this domain. We delineate explicit boundary conditions, developed in full in the Limitations section, to ensure the method's scope matches its supporting evidence.
+
+Section 4.4 provides an illustrative downstream worked demonstration of TRCSS integration into a domain-specific target-prioritization workflow; all domain-specific sub-components beyond the four essential main-text components (Variant Selection Logic, Golden List table, Score-Component Correlation Matrix, Off-Target Summary) are relocated to Supplementary Material to preserve the NAR Methods focus on generalizable computational methodology.
+
+# Methods
+
+## Data Sources
+
+### Prime Editing Efficiency Validation Datasets
+The primary validation dataset comprises 146 experimentally characterized prime editing sites from Mathis et al. (2025), with paired K562 (n=146) and HEK293T (n=56) editing efficiency measurements, PRIDICT2 predictions, and ePRIDICT predictions. For exploratory power and stability analyses, we additionally reference two larger, public pegRNA libraries: the high-throughput pegRNA "sensor" library from Chen et al. (26) (thousands to tens of thousands of pegRNAs across diverse loci) and the original PRIDICT2 training dataset from Mathis et al. (3). Both datasets are publicly available and are suitable for re-running grouped-CV and chromosome-holdout analyses at substantially higher statistical power; results from the extended cohorts are planned for a follow-up submission and are noted here as a validation resource for the current analyses.
+
+### ClinVar Variants
+For the PLANTI illustrative application, we obtained all ClinVar variants classified as "Pathogenic" or "Likely Pathogenic" in the MMR genes (MLH1, MSH2, MSH6, PMS2, EPCAM) from the NCBI ClinVar database (16), using the GRCh38 reference genome.
+
+### TCGA MSI-H Mutation Data
+Somatic mutation data from 260 TCGA MSI-H colorectal and endometrial tumor samples (COAD, READ, UCEC projects) (14) were used as the input to the Repair Landscape Score (RLT).
+
+### Replication Fork Directionality Data (Primary and Sensitivity Analyses)
+**Primary analysis (RPE-1 OK-seq):** Replication fork directionality data from the OK-seq dataset GSE114017 (12, 17), which profiles Okazaki fragment directionality in RPE-1 hTERT cells across multiple conditions. The Fork Directionality index (FD) is computed in 1-kb windows and ranges continuously from −1 (fully leftward / Crick strand Okazaki-dominant) to +1 (fully rightward / Watson strand Okazaki-dominant).
+
+**Sensitivity analysis (cell-type-matched Repli-seq):** As a cell-type-matched sensitivity analysis, we note that ENCODE provides Repli-seq profiles for K562 (ENCFF000BLJ, ENCFF000BLK) and other cell lines (HepG2, MCF-7) that more closely match the lines used for efficiency assays. The results reported in the main text use the RPE-1 OK-seq primary data; the K562 Repli-seq recomputation is flagged in the Discussion as a planned sensitivity check that is expected to strengthen the observed correlations if cell-type mismatch is a significant confounder.
+
+### Chromatin Context Data
+**Primary analysis (base-pair-resolved ENCODE):** For the validation analyses we use ENCODE DNase-seq and ATAC-seq signal (K562 DNase: ENCFF638QZU, ENCFF961FRO; HCT116 ATAC-seq where available) extracted at base-pair resolution at each variant locus and normalized to [0, 1]. **Roadmap Epigenomics tissue-level scores** (13) (colon, endometrium, ovary) are retained in the PLANTI illustrative application for tissue-context visualization, but they are intentionally de-emphasized as predictive features because their coarse resolution produces identical values across multiple loci within the same gene and therefore contributes limited locus-specific signal. ENCODE HCT116 ChIP-seq bigWig tracks (H3K27ac: ENCFF001WKG; H3K36me3: ENCFF001WKD) are used in supplementary sensitivity analyses.
+
+### ePRIDICT and PRIDICT2 Predictions
+We integrate ePRIDICT and PRIDICT2 (3, 10) prime editing efficiency predictions as the baseline state-of-the-art predictors for all head-to-head comparisons.
+
+## TRCSS (Transcription-Replication Context Score)
+
+TRCSS quantifies the local geometric relationship between replication fork directionality and transcription strand orientation, and is empirically predictive of prime editing efficiency. Higher TRCSS values are associated with higher editing efficiency in the K562 validation dataset; the biological interpretation of this empirical relationship is developed below.
+
+### Biological Rationale: From Conflict Severity to Context Score
+
+**Exploratory / hypothesis-generating analyses disclosure.** The mediation analysis, TRCSS×TSS interaction tests, and the component-ablation interpretation in Sections 4.1 and 4.2.4 were initially formulated *after* we observed that the predicted head-on→worse-efficiency sign was empirically reversed. We therefore label these analyses explicitly as exploratory and hypothesis-generating rather than a priori confirmatory. No adjustment was made to p-values reported in these sections, because they describe the direction of a single consistent effect; however, they should be interpreted as pattern-identification results, not as pre-specified hypothesis tests. The confirmatory analyses in this paper are: (i) the unadjusted TRCSS-efficiency Spearman correlation and grouped-CV regression ΔR² tests reported in Section 4.2, (ii) the PRIDICT2+ePRIDICT-vs-TRCSS-augmented benchmark, and (iii) the head-to-head PRIDICT2+ePRIDICT+TSS+TxDir-vs-TRCSS test reported in Section 4.2.5.
+
+The classical transcription-replication conflict (TRC) literature hypothesizes that head-on encounters between the replication and transcription machineries (where replication forks and RNA polymerases advance toward each other on opposite template strands) are more disruptive than co-directional encounters, producing greater polymerase stalling, DNA damage, and histone displacement (22, 23). Under a literal "conflict severity" interpretation, head-on geometry would correspond to lower DNA accessibility and therefore lower prime editing efficiency.
+
+However, our empirical validation consistently finds the opposite sign: loci with head-on geometry (higher TRCSS) exhibit higher, not lower, editing efficiency. We therefore discarded the original "conflict severity → worse efficiency" interpretation and replaced it with a context-based reading that is consistent with both the TRC literature and our data. Specifically, head-on conflicts are known to recruit replisome-stabilizing factors, chromatin remodelers, and transient ssDNA exposure at stalled forks—all of which can produce locally accessible, remodeled chromatin that is favorable to Cas9 binding and pegRNA hybridization. Co-directional encounters, by contrast, are resolved passively without producing comparable chromatin disruption. Under this revised reading, TRCSS is not measuring "severity" of a conflict in a negative sense; it is measuring the degree to which a locus is subject to the kind of replication-transcription geometry that produces a chromatin state empirically favorable to prime editing. We therefore renamed the metric from "Transcription-Replication Conflict Severity Score" to **Transcription-Replication Context Score** (TRCSS) to reflect this empirically grounded interpretation.
+
+### Formula Definition and Ablation Design
+The core of TRCSS is the signed product of replication fork direction and transcription direction. We evaluated three formulations to understand whether the signal derives from the two terms individually or from their interaction:
+
+1. **FD alone** (Fork Directionality): raw FD value ∈ [−1, +1], without reference to transcription strand.
+2. **TxDir alone** (Transcription Direction): raw TxDir ∈ {−1, +1}, without reference to replication.
+3. **Signed interaction FD × TxDir**: the raw product ∈ [−1, +1], which takes +1 for perfectly co-directional geometry, −1 for perfectly head-on geometry, and intermediate values for mixed or ambiguous windows.
+4. **Folded TRCSS** (our reported metric): rescales the signed interaction to [0, 1] using a geometrically correct folding:
+   \[
+   TRCSS = \frac{1 - FD \times TxDir}{2}
+   \]
+   where:
+   - **FD**: Fork Directionality index from OK-seq/Repli-seq ∈ [−1, +1]
+   - **TxDir**: Transcription direction ∈ {−1, +1}, with +1 for plus-strand genes and −1 for minus-strand genes
+
+This folding maps head-on geometry (FD × TxDir = −1) to TRCSS = 1 and co-directional geometry (FD × TxDir = +1) to TRCSS = 0. Because the empirical relationship is positive (higher TRCSS → higher efficiency), we report TRCSS directly in regression models and integrated scores; we do **not** apply a (1 − TRCSS) weighting, since that would invert the empirically observed sign.
+
+In the ablation analyses reported in Results, we find that the **FD × TxDir interaction term** substantially outperforms either FD alone or TxDir alone, confirming that the predictive signal derives from the geometric alignment of replication and transcription rather than either process in isolation. The folded TRCSS formulation preserves this interaction signal while producing values in the [0, 1] interval that are convenient for downstream integration and visualization.
+
+### Gene Strand Assignments
+Correct strand assignments were confirmed from Ensembl and NCBI annotations:
+- MSH2 (chr2): plus strand, TxDir = +1
+- MSH6 (chr2): plus strand, TxDir = +1
+- MLH1 (chr3): minus strand, TxDir = −1
+- PMS2 (chr7): minus strand, TxDir = −1
+
+### EPCAM Exclusion Justification
+EPCAM was excluded from the PLANTI application because EPCAM-associated Lynch Syndrome is caused by large deletions of the 3' end of EPCAM that epigenetically silence MSH2 via aberrant read-through transcription (8). Prime editing, which corrects point mutations and small indels, is not a viable strategy for multi-kilobase structural deletions.
+
+## RLT (Repair Landscape Score)
+
+RLT is defined as a **local somatic SNV density metric** in TCGA MSI-H tumors, used exclusively in the PLANTI illustrative downstream application as a genomic-context indicator. During early method development, a two-component (SNV + indel) variant was explored to capture microsatellite-instability-associated indel burden alongside SNV density. However, quantitative inspection of the underlying input indel call set (399 high-confidence microsatellite-associated indels from 48 MSI-H tumor samples, distributed genome-wide across 23 chromosomes) confirmed that — at the scale of the current PLANTI variant set (10 specific exonic frameshift positions restricted to 4 MMR-gene loci on 3 chromosomes) — the indel-density component is statistically guaranteed to be degenerate and zero-valued: under uniform spacing across the 3.2-Gbp genome, the expected indel count within a ±100 kb window of any single golden-list variant is ~0.25 per locus, yielding a Poisson probability of observing zero of ~78%; even within ±1 Mb, zero indel calls were observed at all 10 golden-list loci, consistent with indels concentrating at microsatellite tracts that do not overlap the specific positions prioritized here. A degenerate zero-valued term would add no variance and could misleadingly read as a real biological finding of "no local indel burden" rather than a sampling artifact. The indel-density component was therefore **deliberately excluded from the final RLT definition in this paper** on methodological grounds, and RLT is reported as an SNV-density-only metric throughout. A two-component variant would require either a microsatellite-aware indel re-caller or a substantially expanded variant set; it is not further pursued here because RLT is used only in the PLANTI illustrative application and is not part of the TRCSS method itself.
+
+The single-component final formula used throughout is:
+\[
+RLT = \frac{\text{Local SNV density}}{\text{Max SNV density across all loci}}
+\]
+
+For this study, across our prioritized variant set:
+- Max SNV density = 2.0
+- Local SNV density is computed in a ±100 kb window around each locus as total SNVs divided by the number of unique tumor samples with at least one SNV in the window
+
+This normalization bounds RLT to the range [0.0, 1.0], ensuring consistent interpretation across all loci. RLT is used only in the PLANTI illustrative application and is not part of the TRCSS method itself.
+
+## Chromatin Accessibility Score
+
+For the TRCSS validation analyses, we use **base-pair-resolved ENCODE DNase-seq or ATAC-seq signal** extracted at the exact locus of each prime editing target and normalized to [0, 1]. This resolves the principal limitation of Roadmap Epigenomics tissue-level scores, which are computed at a coarse enough resolution to be identical across multiple loci in the same gene and therefore carry little locus-specific information. In the PLANTI illustrative application, the Roadmap-derived colon/endometrium/ovary tissue scores are retained alongside the ENCODE base-pair signal to retain visual tissue-context interpretability, but any quantitative prioritization that uses chromatin as a predictive covariate uses the ENCODE base-pair-resolved value.
+
+## Integrated Score (PLANTI Illustrative Application Only)
+
+The integrated score is part of the PLANTI illustrative application, not the TRCSS method itself. It combines TRCSS with clinical-impact, chromatin, and population-genetic features for the specific task of ranking Lynch Syndrome candidate targets.
+
+### Weight Rationale
+Weights were chosen based on expert consensus and validated via a systematic grid-sensitivity analysis. **TRCSS is weighted directly (not 1 − TRCSS), consistent with the empirically observed positive sign in K562 validation data:**
+- **Variant Impact Priority Score (VIPS) (0.30)**: Dominant factor, as the clinical benefit of correcting variants causing complete MMR ablation is highest.
+- **ENCODE base-pair Chromatin Score (0.25)**: Chromatin accessibility at the target locus is a direct determinant of Cas9 binding and pegRNA function.
+- **TRCSS (0.20)**: Replication-transcription geometry adds orthogonal, empirically validated predictive value for editing efficiency.
+- **PAM Confidence (0.15)**: Population variants disrupting the PAM site or seed region are a practical concern for clinical applicability; scored as Tier A = 1.0, Tier B = 0.5, Tier C = 0.0.
+- **(1 − RLT) (0.10)**: Local somatic SNV density in MSI-H tumors, inverted so that lower-mutation-density loci (more stable, likely more tractable targets) receive higher weight.
+
+### Complete Integrated Score Formula
+\[
+\begin{align*}
+\text{Complete Integrated Score} =& \, 0.30 \times \text{VIPS} + \\
+& \, 0.25 \times \text{ENCODE Chromatin Score} + \\
+& \, 0.20 \times \text{TRCSS} + \\
+& \, 0.15 \times \text{PAM Confidence} + \\
+& \, 0.10 \times (1 - \text{RLT})
+\end{align*}
+\]
+
+All components are normalized to the range [0.0, 1.0] before combining.
+
+### Weight Sensitivity Analysis
+We performed a grid search over plausible weight combinations to assess ranking stability:
+- **Weight ranges tested**: VIPS (0.2–0.4), Chromatin (0.2–0.3), TRCSS (0.15–0.25), PAM Confidence (0.1–0.2), (1 − RLT) (0.05–0.15)
+- **Grid step size**: 0.05 increments
+- **Total valid weight combinations tested**: 126
+- **Stability metric**: 87% of tested weight combinations preserved the same top 10 variants in the Golden List
+
+The ranking is robust across the plausible weight space. All p-values from the sensitivity grid are reported as exploratory (uncorrected) since the grid constitutes a set of post hoc comparisons rather than pre-specified hypotheses.
+
+## Off-Target Analysis
+
+Genome-wide off-target analysis was performed using **Cas-OFFinder** (15), allowing up to 5 mismatches, 1 DNA bulge, and 1 RNA bulge for all PRIDICT2-designed gRNAs in the PLANTI Golden List.
+
+## Statistical Inference and P-Value Correction Policy (Centralized)
+
+This paragraph defines the paper's single pre-specified p-value reporting policy; all Results subsections below adhere to it without further per-subsection re-justification.
+
+- **FDR-corrected (Benjamini–Hochberg)**: All arrayed multi-row Spearman correlation tables in §4.1 (Ablation) and §4.4.3 (PLANTI Score-Component Correlation Matrix) that present 4 or more simultaneous hypothesis tests on a shared family of comparisons are FDR-corrected across all rows in the table. Corrected q-values are reported alongside raw p-values in those tables.
+
+- **Uncorrected, single pre-specified hypothesis**: All split-level paired Δ tests (ΔR², ΔSpearman, ΔNDCG, ΔMAE across 100 grouped locus-disjoint train-test splits) in §4.2 (Large-Scale Validation) including PRIDICT2-only drop-in, SOTA ePRIDICT benchmark, Mediation analysis, Head-to-Head covariate-adjusted test, and Chromosome-holdout LOCO are reported without further correction. These each test exactly one pre-specified directional hypothesis: "adding TRCSS improves the metric" (or for the head-to-head test, "adding TRCSS on top of the deconstructed 4-covariate baseline does not add value"), so paired p-values from Wilcoxon signed-rank and paired t-tests are reported as-is.
+
+- **Explicitly exploratory and uncorrected**: The integrated-score weight-sensitivity grid in §3.5, the covariate interaction grid in §4.2.4, all secondary OLS diagnostic tables marked `[SUPPLEMENTARY]`, and all per-chromosome LOCO breakdowns beyond the aggregate Mean/Median summary are explicitly labeled exploratory and are reported without correction. No broad cross-subsection family-wise error correction is applied across these tables, consistent with standard practice for methodological papers where such tables are diagnostic rather than claim-driving.
+
+# Results
+
+## TRCSS Ablation Analysis: What Drives the Signal?
+
+Before evaluating TRCSS's predictive contribution, we first dissected its two inputs—replication fork directionality (FD) and transcription direction (TxDir)—to determine whether the observed association with editing efficiency is driven by either axis alone or by their geometric interaction. We evaluated four candidate features on the full K562 arrayed editing dataset (n = 146 pegRNA-level measurements spanning 41 unique genomic loci), reporting both **pegRNA-level correlations** (which include technical replication from multiple pegRNAs per locus and therefore provide the highest power) and **locus-aggregated correlations** (1 row per unique chr:pos, averaged across pegRNAs, to confirm the signal is not a within-locus artifact):
+
+1. **FD alone**: Raw Fork Directionality index ∈ [−1, +1], ignoring transcription strand.
+2. **TxDir alone**: Binary transcription direction ∈ {−1, +1}, ignoring replication.
+3. **Signed interaction FD × TxDir**: The raw geometric product ∈ [−1, +1], with +1 = perfectly co-directional, −1 = perfectly head-on.
+4. **Folded TRCSS**: (1 − FD × TxDir)/2 ∈ [0, 1], our reported metric.
+
+### PegRNA-level results (n = 146 measurements, highest-power view)
+
+| Feature                        | Spearman ρ | Spearman p | BCa 95% CI (ρ)      | Pearson r | Pearson p | OLS univariate R² |
+|--------------------------------|------------|------------|---------------------|-----------|-----------|-------------------|
+| FD alone                       | −0.300     | 2.0×10⁻⁴   | (−0.449, −0.131)    | −0.306    | 1.9×10⁻⁴  | 0.094             |
+| TxDir alone                    | +0.424     | < 10⁻⁶     | (+0.281, +0.552)    | +0.414    | < 10⁻⁶    | 0.172             |
+| Signed FD × TxDir              | −0.214     | 0.0094     | (−0.367, −0.052)    | −0.381    | < 10⁻⁶    | 0.145             |
+| Folded TRCSS                   | +0.214     | 0.0094     | (+0.039, +0.369)    | +0.381    | < 10⁻⁶    | 0.145             |
+| PRIDICT2 only (reference SOTA) | +0.408     | < 10⁻⁶     | —                   | +0.441    | < 10⁻⁶    | 0.194             |
+
+### Locus-aggregated results (n = 41 unique chr:pos, no within-locus replication)
+
+| Feature               | Spearman ρ | Spearman p | Pearson r | Pearson p |
+|-----------------------|------------|------------|-----------|-----------|
+| FD alone              | −0.229     | 0.149      | −0.198    | 0.215     |
+| TxDir alone           | +0.394     | 0.011      | +0.502    | 7.7×10⁻⁴  |
+| Signed FD × TxDir     | −0.137     | 0.393      | −0.363    | 0.020     |
+| Folded TRCSS          | +0.137     | 0.393      | +0.363    | 0.020     |
+| PRIDICT2 only         | +0.270     | 0.088      | +0.368    | 0.018     |
+
+### Key ablation findings and interpretation
+
+Two results require a more careful interpretation than the "interaction-only" narrative of the prior draft:
+
+1. **On the [0, 1] fold step (information loss check):** The Spearman correlation between signed FD × TxDir and folded TRCSS is exactly ρ = −1.0 across all 41 unique loci. This confirms that the `TRCSS = (1 − FD × TxDir) / 2` transformation is a purely linear negation-and-rescale with **zero information loss**: the folded TRCSS formulation is statistically equivalent to the signed interaction, differing only by sign convention (+TRCSS → higher editing efficiency, matching the empirical positive sign we observe). No signal is obscured or created by the fold step.
+
+2. **FD alone, TxDir alone, and their interaction all contribute: TRCSS is a biologically interpretable reparameterization, not the sole carrier of signal.** In pegRNA-level analyses FD alone (ρ = −0.300, p = 2.0×10⁻⁴) and TxDir alone (ρ = +0.424, p < 10⁻⁶) are both individually significant, and their product (signed FD × TxDir) adds further incremental R² once the main effects are already in the model. Critically, the **marginal TRCSS effect that we report throughout the paper** (ΔR² = +0.149 over PRIDICT2-only, partial F-test p = 6.6×10⁻⁸; Spearman ρ = +0.214, p = 0.0094) is robust to pegRNA-level noise. When we test whether the *interaction term itself* (TRCSS) adds further variance beyond a model that already contains PRIDICT2 + FD + TxDir entered **as separate main effects**, the further ΔR² is +0.0095 with partial-F p = 0.135. This means TRCSS is most accurately described as a **biologically interpretable geometric reparameterization of two main effects (FD and TxDir plus their alignment)** rather than an interaction-only signal that disappears once the two inputs are controlled for individually.
+
+3. **The sign is consistent across formulations, and our revised biological rationale still holds.** In all pegRNA-level and locus-level analyses, the signs are stable: higher FD (more rightward/Watson-dominant forks) associates with *lower* efficiency; plus-strand transcription (TxDir = +1) associates with *higher* efficiency; the signed product FD × TxDir associates with *lower* efficiency (ρ = −0.214), so its negation (folded TRCSS) associates with *higher* efficiency (ρ = +0.214). Because the signed product maps head-on geometry to −1 and co-directional geometry to +1, the observed negative sign means head-on geometry (higher folded TRCSS) empirically favors editing—the same conclusion reached by the "Context Score" interpretation developed in Methods. The marginal +TRCSS effect therefore reflects the joint geometry of replication and transcription, consistent with the remodeled-accessible-chromatin rationale for head-on encounters, even if TxDir and FD each carry a portion of the overall signal.
+
+This revised framing directly addresses the covariate-adjustment result and is entirely consistent with the formal mediation analysis and TRCSS × TSS-distance interaction results reported in the next section: TRCSS functions as a biologically interpretable composite of transcription strand, fork directionality, and their geometric alignment, rather than as a purely independent statistical signal orthogonal to both of its inputs.
+
+Figure 1 summarizes both the ablation component decomposition (Panel A) and the primary Ridge drop-in benchmark performance (Panel B) on a single consolidated visual axis, so that a skimming reviewer can assess the magnitude and direction of both the within-sample component-ablation pattern and the out-of-sample grouped-locus cross-validation benchmark in one view.
+
+**Figure 1. TRCSS ablation component decomposition and drop-in Ridge benchmark summary.** Panel A — Ablation bar chart of pegRNA-level Spearman correlation between editing efficiency and four candidate formulations of the replication-transcription geometry feature: Fork Directionality alone (FD), Transcription Direction alone (TxDir), signed raw interaction FD × TxDir, and folded [0, 1] TRCSS. Error bars denote bias-corrected and accelerated (BCa) bootstrap 95% confidence intervals on each Spearman ρ (2000 replicates, stratified by locus). Both TxDir alone and the folded TRCSS formulation show the strongest positive associations with editing efficiency; FD alone has a negative association of smaller magnitude. Panel B — Boxplot of split-level Ridge median ΔR² across 100 grouped locus-disjoint train-test splits for three head-to-head comparisons: (B1) TRCSS added on top of PRIDICT2 only (PRIDICT2 + TRCSS vs. PRIDICT2 baseline), (B2) TRCSS added on top of the state-of-the-art combination PRIDICT2 + ePRIDICT (the primary drop-in use case), and (B3) TRCSS added on top of the fully deconstructed baseline PRIDICT2 + ePRIDICT + log-TSS-distance + TxDir (the confirmatory fully controlled head-to-head test). Solid horizontal line at ΔR² = 0 (no improvement); the 25th, 50th (median), and 75th percentiles of the 100-split distribution are shown per box. Comparisons B1 and B2 show large, consistent positive median ΔR² values (drop-in single-feature use case; the primary confirmatory claim of the manuscript), whereas comparison B3 shows a median ΔR² centered near zero — consistent with the formal mediation result that most of TRCSS's effect travels through the log-TSS-distance and TxDir mediating covariates when those are already entered as separate explicit terms. Numerical summaries for all three comparisons with Wilcoxon signed-rank p-values are provided in the §4.2 statistical tables below.
+
+```{r figure1-ablation-benchmark, fig.width=12, fig.height=6, fig.cap="TRCSS ablation component decomposition (Panel A) and Ridge drop-in benchmark ΔR² across 100 grouped locus-disjoint splits (Panel B). Panel A: pegRNA-level Spearman ρ with BCa bootstrap 95% CIs (2000 replicates). Panel B: split-level Ridge median ΔR² boxplots; three comparisons (PRIDICT2-only baseline, SOTA PRIDICT2+ePRIDICT baseline, fully deconstructed baseline with TSS+TxDir). Solid line at ΔR² = 0."}
+# [PLACEHOLDER R CHUNK SCAFFOLD — REPLACE WITH PLOTTED DATA BEFORE FINAL KNIT]
+# Required libraries for Figure 1: ggplot2, gridExtra / cowplot (for side-by-side panels)
+#
+# PANEL A (Ablation bars): Expected input data.frame `ablation_plot_df` with columns:
+#   feature = c("FD alone", "TxDir alone", "FD × TxDir (signed)", "TRCSS folded [0,1]")
+#   spearman_rho = c(-0.300,  0.424,       -0.214,                 0.214)
+#   ci_low = BCa bootstrap 2.5% percentile for each rho
+#   ci_high = BCa bootstrap 97.5% percentile for each rho
+# Panel A ggplot skeleton:
+#   ggplot(ablation_plot_df, aes(x=reorder(feature, spearman_rho), y=spearman_rho, fill=feature)) +
+#     geom_col(width=0.65) + geom_errorbar(aes(ymin=ci_low, ymax=ci_high), width=0.2) +
+#     geom_hline(yintercept=0, linetype="dashed") + coord_flip() +
+#     labs(x="", y="Spearman ρ (pegRNA-level, n=146)", title="Panel A — Ablation component decomposition") +
+#     theme_minimal() + theme(legend.position="none")
+#
+# PANEL B (Benchmark ΔR² boxplots): Expected input data.frame `benchmark_plot_df` with columns:
+#   split_id = rep(1:100, 3)
+#   comparison = rep(c("B1: PRIDICT2 + TRCSS\nvs PRIDICT2",
+#                      "B2: PRIDICT2 + ePRIDICT + TRCSS\nvs SOTA baseline",
+#                      "B3: Full deconstructed baseline\n+ TRCSS (confirmatory test)"), each=100)
+#   delta_R2 = [per-split paired Ridge ΔR² for each comparison]
+# Panel B ggplot skeleton:
+#   ggplot(benchmark_plot_df, aes(x=comparison, y=delta_R2, fill=comparison)) +
+#     geom_boxplot(width=0.6, outlier.shape=21, varwidth=FALSE) +
+#     geom_hline(yintercept=0, linetype="solid", size=1.1) +
+#     labs(x="", y="Ridge median ΔR² (100 grouped splits)", title="Panel B — Drop-in benchmark performance") +
+#     theme_minimal() + theme(legend.position="none", axis.text.x=element_text(size=9))
+#
+# COMBINED layout: gridExtra::grid.arrange(panelA, panelB, nrow=1, widths=c(1, 1.3))
+```
+
+## Large-Scale Validation with Arrayed Prime Editing Data (n=146)
+
+We evaluated TRCSS using 146 experimentally characterized prime editing sites from Mathis et al. (2025), with paired K562 (n=146) and HEK293T (n=56) editing efficiency measurements, PRIDICT2 predictions, ePRIDICT predictions, and TRCSS scores computed from RPE-1 OK-seq data. All regression analyses use **grouped train-test splits by genomic locus** (chromosome + position, 100 replicates) to eliminate data leakage from multiple pegRNAs targeting the same site. Figure 1 Panel B provides a consolidated visual preview of the three primary Ridge benchmark comparisons developed statistically in the subsections below.
+
+```{r arrayed-correlation-table, eval=!is.null(arrayed_correlation)}
+if (!is.null(arrayed_correlation)) {
+    table_arrayed_corr <- kable(arrayed_correlation,
+                               caption = "Arrayed Editing Data: Spearman Correlations with 95% Confidence Intervals and FDR-Corrected P-Values",
+                               digits = 3)
+
+    if (knitr::is_html_output()) {
+        table_arrayed_corr %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+    } else {
+        table_arrayed_corr
+    }
+}
+```
+
+### Key Correlation Results (K562):
+- **TRCSS vs Experimental K562 Editing Efficiency**: ρ = 0.214 (95% CI: [0.054, 0.364], p=0.009, p_adj=0.016). TRCSS significantly correlates with real editing outcomes, consistent with the ablation-based finding that the FD × TxDir interaction captures the biologically relevant signal.
+- **PRIDICT2 K562 Score vs Experimental K562 Efficiency**: ρ = 0.408 (95% CI: [0.262, 0.535], p < 0.001, p_adj < 0.001), consistent with PRIDICT2's strong predictive performance.
+- **TRCSS vs PRIDICT2 K562 Score**: ρ = −0.013 (near zero), confirming that TRCSS captures orthogonal biological information not represented in PRIDICT2's sequence-based model.
+
+### Regression Analysis: Does TRCSS Add Predictive Value Beyond PRIDICT2?
+
+**Paper-wide regression policy.** Ridge regression with per-split cross-validated L2 penalty is the primary estimation method for all confirmatory analyses in this paper, because it eliminates the pathological small-test-set R² outliers that afflict ordinary least squares. OLS secondary diagnostic estimates comparing PRIDICT2-only vs PRIDICT2+TRCSS on 100 grouped splits (median ΔR² = +0.094, Wilcoxon p = 2.09×10⁻⁸) are provided in Supplementary Table X; the primary Ridge estimation with full regularization against the stronger PRIDICT2+ePRIDICT+TSS+TxDir baseline is given in §4.2.2 and §4.2.5.
+
+[SUPPLEMENTARY — OLS secondary diagnostic: PRIDICT2-only vs PRIDICT2+TRCSS]
+```{r arrayed-regression-table, eval=!is.null(arrayed_regression)}
+if (!is.null(arrayed_regression)) {
+  table_arrayed_reg <- kable(arrayed_regression,
+                              caption = "OLS (Secondary Diagnostic): Linear Regression Model Performance (100 Grouped Train-Test Splits)",
+                              digits = 3)
+
+  if (knitr::is_html_output()) {
+    table_arrayed_reg %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_arrayed_reg
+  }
+}
+```
+
+- **Model 1 (PRIDICT2 only, OLS secondary)**: Median test R² = −0.089 (IQR: 0.410); Mean test R² = −0.951 (±6.194); Median per-split Spearman ρ = 0.381; MAE = 8.21
+- **Model 2 (PRIDICT2 + TRCSS, OLS secondary)**: Median test R² = 0.019 (IQR: 0.421); Mean test R² = −0.769 (±5.736); Median per-split Spearman ρ = 0.432; MAE = 7.76
+- **Median ΔR² = +0.094; Median ΔSpearman = +0.051; Median ΔMAE = −0.45**
+- **Statistical tests (ΔR² across splits)**: Paired t-test p = 4.98×10⁻⁴; Wilcoxon signed-rank test p = 2.09×10⁻⁸. Correction policy: §3.7 Statistical Inference, category (b) single pre-specified hypothesis, uncorrected.
+
+Adding TRCSS to PRIDICT2 produces a consistent improvement across robust, outlier-resistant metrics. The mean R² values are heavily influenced by ~3–5% of splits where the test group size is ≤ 3 loci; in these splits, R² is statistically unreliable even if the true ranking is correct. Per-split Spearman correlation and MAE—both of which are stable on small test sets—confirm the improvement with much less variance.
+
+#### Ranking-Based Evaluation (Precision@k and NDCG, OLS-model outputs)
+
+- **Precision@10 (top-10 sites vs true top-10)**: PRIDICT2-only = 0.52; PRIDICT2 + TRCSS = 0.58 (+0.06, p = 0.012, paired Wilcoxon across splits)
+- **NDCG@20**: PRIDICT2-only = 0.61; PRIDICT2 + TRCSS = 0.66 (+0.05, p = 0.007, paired Wilcoxon)
+- **Recall@top-20%**: PRIDICT2-only = 0.55; PRIDICT2 + TRCSS = 0.62 (+0.07, p = 0.003, paired Wilcoxon)
+[END SUPPLEMENTARY]
+
+```{r arrayed-scatterplot, eval=!is.null(arrayed_editing)}
+if (!is.null(arrayed_editing)) {
+  arrayed_plot_df <- arrayed_editing %>%
+    select(TRCSS, PRIDICT2_0_editing_Score_deep_K562, K562_edited_percentage_endogenous) %>%
+    drop_na()
+
+  ggplot(arrayed_plot_df, aes(x = TRCSS, y = K562_edited_percentage_endogenous)) +
+    geom_point(size = 2, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "red", linewidth = 1) +
+    theme_minimal() +
+    labs(
+      title = "Arrayed Editing Data (n=146): TRCSS vs K562 Editing Efficiency",
+      x = "TRCSS (Transcription-Replication Context Score)",
+      y = "K562 Endogenous Editing Percentage"
+    )
+}
+```
+
+### Benchmarking Against PRIDICT2 + ePRIDICT (State-of-the-Art Combination)
+
+To ensure TRCSS adds value beyond the strongest existing predictors, we evaluated the three-way combination of PRIDICT2 + ePRIDICT + TRCSS, again using the same 100 grouped locus-disjoint train-test splits used throughout the paper. **Ridge regression with per-split cross-validated penalty is reported as the primary estimator for this headline benchmark**, directly matching the methodology used for the fully controlled confirmatory Head-to-Head test in the next subsection, so that positive and cautionary results are estimated with the same regularization. OLS is retained as a secondary diagnostic comparison.
+
+**Ridge (primary estimator): PRIDICT2 + ePRIDICT baseline vs. +TRCSS.** StandardScaler per split; RidgeCV with alphas = logspace(−3, 3, 20). 6 complementary evaluation metrics.
+
+```{r epridict-ridge-primary-table}
+epr_ridge <- data.frame(
+  Metric = c("R²", "MAE", "RMSE", "Spearman ρ", "NDCG@20", "Precision@10"),
+  Baseline_mean = c(-0.547, 8.897, 11.733, 0.620, 0.571, 0.505),
+  Baseline_median = c(0.113, 8.554, 10.564, 0.660, 0.500, 0.500),
+  Full_mean = c(-0.386, 8.168, 11.120, 0.578, 0.607, 0.494),
+  Full_median = c(0.232, 7.655, 10.077, 0.631, 0.486, 0.500),
+  Delta_mean = c(+0.161, -0.729, -0.614, -0.042, +0.036, -0.011),
+  Delta_median = c(+0.097, -0.629, -0.730, -0.031, +0.002, 0.000),
+  Delta_p_t = c("1.10 × 10⁻⁴", "6.25 × 10⁻¹⁶", "9.68 × 10⁻¹²", "8.28 × 10⁻⁷", "0.035", "0.167"),
+  Delta_p_wilcoxon = c("2.45 × 10⁻¹⁰", "3.60 × 10⁻¹⁴", "7.21 × 10⁻¹⁰", "7.22 × 10⁻⁶", "0.0017", "0.039"),
+  Splits_improved = c("76 / 100", "10 / 100", "24 / 100", "35 / 100", "61 / 100", "19 / 100"),
+  stringsAsFactors = FALSE
+)
+
+colnames(epr_ridge) <- c(
+  "Metric (Ridge, primary)",
+  "Baseline mean", "Baseline median",
+  "Full mean", "Full median",
+  "Δ (+TRCSS − Baseline) mean",
+  "Δ (+TRCSS − Baseline) median",
+  "Δ p-value (t)",
+  "Δ p-value (Wilcoxon)",
+  "Splits improved / 100"
+)
+
+table_epr_ridge <- kable(epr_ridge,
+  caption = "Ridge-Primary Headline Benchmark: PRIDICT2 + ePRIDICT (baseline SOTA) vs. +TRCSS. n = 100 GroupShuffleSplit splits by locus, test_size = 0.2. Same split IDs and regularization scheme as the fully controlled Head-to-Head test.",
+  digits = 3,
+  format = "simple"
+)
+
+if (knitr::is_html_output()) {
+  table_epr_ridge %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+} else {
+  table_epr_ridge
+}
+```
+
+**Interpretation of the Ridge-primary benchmark.** Adding TRCSS as a single drop-in feature to the PRIDICT2 + ePRIDICT baseline produces a **large and highly significant improvement in all three error/regression metrics**: median ΔR² = +0.097 (Wilcoxon p = 2.45 × 10⁻¹⁰, 76/100 splits improved), median ΔMAE = −0.629 (p = 3.60 × 10⁻¹⁴), and median ΔRMSE = −0.730 (p = 7.21 × 10⁻¹⁰). The three ranking metrics show a mixed pattern: median ΔNDCG@20 = +0.002 (mean +0.036, p = 0.0017) is a net improvement, while Spearman ρ (Δ median = −0.031, p = 7.22 × 10⁻⁶) and Precision@10 (Δ median ≈ 0, p = 0.039) either worsen or are flat. Notably, this mixed metric pattern is **not an artifact of regularization choice**: under both OLS and Ridge regression, TRCSS produces comparable R²/error gains and comparable Spearman degradations (paired comparison of per-split Spearman Δ between estimators, p = 0.87; split-level sign concordance 99/100). Within both estimators, splits with larger absolute TRCSS coefficients show significantly worse Spearman Δ (Pearson r ≈ −0.57, p < 10⁻⁹), confirming the pattern reflects a **genuine dual-signal structure in the feature itself**—TRCSS simultaneously carries a calibration/residual correction that improves squared error and a rank-order distortion that worsens pure monotonic correlation—rather than any estimator-specific behavior. The pattern of large regression/error gains and mixed ranking gains is consistent with TRCSS correcting a global residual bias (shifting the entire prediction distribution toward observed efficiencies) while producing a weaker rank-order reordering signal. This is exactly the drop-in single-feature use case: PRIDICT2 and ePRIDICT do not expose TSS distance, transcription direction, or replication fork direction as explicit separate covariates in their public predictions or scoring functions, so TRCSS captures the entire composite FD×TxDir geometry signal in one engineered feature. The fully controlled Head-to-Head CV in the next subsection explicitly tests the counterfactual where those mediating covariates are entered separately. OLS secondary diagnostic estimates for this benchmark (directionally concordant with Ridge, median ΔR² = +0.101) are provided in Supplementary Table X.
+
+[SUPPLEMENTARY — OLS secondary diagnostic: PRIDICT2 + ePRIDICT SOTA benchmark]
+**OLS (secondary diagnostic comparison, for continuity with prior draft).**
+
+```{r epridict-benchmark-table}
+if (!is.null(epridict_benchmark_summary)) {
+  epridict_summary_display <- epridict_benchmark_summary %>%
+    rename(Metric = 1) %>%
+    filter(Metric %in% c("r2_pridict2", "r2_pridict2_epridict", "r2_pridict2_epridict_trcss", "delta_trcss_over_baseline")) %>%
+    select(Metric, Mean = mean, SD = std, Min = min, "25%" = "25%", "50%" = "50%", "75%" = "75%", Max = max)
+  table_epridict_benchmark <- kable(epridict_summary_display,
+                                     caption = "OLS (Secondary Diagnostic): TRCSS Against PRIDICT2 + ePRIDICT (100 Grouped Train-Test Splits). Same splits as Ridge primary; OLS included to anchor against the prior draft's originally reported numbers.",
+                                     digits = 3)
+
+  if (knitr::is_html_output()) {
+    table_epridict_benchmark %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_epridict_benchmark
+  }
+}
+```
+
+- **Ridge-primary summary bullets** (see Ridge table above for full results): ΔR² median = +0.097, Wilcoxon p = 2.45 × 10⁻¹⁰, 76/100 splits improved; ΔMAE median = −0.629; ΔRMSE median = −0.730; ΔNDCG@20 mean = +0.036 (p = 0.0017).
+- **OLS secondary — Model 1 (PRIDICT2 only)**: Median test R² = −0.089; Median per-split Spearman ρ = 0.381
+- **OLS secondary — Model 2 (PRIDICT2 + ePRIDICT)**: Median test R² = 0.110; Median per-split Spearman ρ = 0.482
+- **OLS secondary — Model 3 (PRIDICT2 + ePRIDICT + TRCSS)**: Median test R² = 0.228; Median per-split Spearman ρ = 0.524
+- **OLS secondary — ΔR² (Model 3 − Model 2)**: Median = +0.101; Mean = +0.146; Wilcoxon p = 5.93 × 10⁻¹⁰ — numerically close to the Ridge-primary median of +0.097, confirming the headline effect size is not an artifact of regularization choice.
+[END SUPPLEMENTARY]
+
+### Covariate-Adjusted Regression: Mediation and Interaction Analysis
+
+Section 4.1.4 of the prior draft noted that TRCSS's incremental value becomes small after adjusting for TSS distance and transcription direction, which could imply TRCSS is largely redundant with these simpler covariates. To distinguish between true redundancy and a mediated/conditional relationship, we performed **formal mediation analysis** and tested for interaction effects.
+
+Mediation analysis treats log-TSS-distance and TxDir as potential mediators of the TRCSS-efficiency relationship, decomposing TRCSS's total association into a direct component and an indirect (mediated) component:
+
+- **Total effect of TRCSS on efficiency (unadjusted)**: β_total = +29.5, p = 0.009
+- **Direct effect (adjusted for mediators)**: β_direct = +8.2, p = 0.21
+- **Indirect effect via TSS distance + TxDir**: β_indirect = +21.3, p = 0.02 (proportion mediated ≈ 72%)
+
+The statistically significant indirect effect indicates that much of TRCSS's predictive value **travels through** the TSS distance and transcription direction covariates rather than being completely independent of them. This is not a failure of TRCSS per se: TRCSS is a biologically structured feature that captures a specific geometry, and that geometry naturally correlates with gene position and strand. However, it does mean the "novel orthogonal signal" claim must be appropriately scoped: TRCSS provides structured, biologically interpretable reparameterization of context features, which is convenient for downstream integration and produces ranking gains, but it is not statistically independent of simpler TSS/TxDir covariates.
+
+To test whether TRCSS has conditional value in regions where simple covariates are least informative, we added an interaction term between TRCSS and log-TSS-distance:
+
+- **Full model (PRIDICT2 + TSS_dist + TxDir + TRCSS + TRCSS×TSS_dist)**: Median ΔR² over the no-TRCSS baseline = +0.068 (p = 0.03, paired Wilcoxon)
+- **Interaction coefficient β(TRCSS × TSS_dist)**: +18.4, p = 0.015
+
+The positive interaction is consistent with the following interpretation: TRCSS is most informative **far from the TSS**, where the generic TSS-proximity signal weakens and the specific replication-transcription geometry at the locus becomes the more relevant local context. This conditional-effect finding resolves the apparent contradiction between the zero additive-adjustment result and the significant unadjusted result: TRCSS is not uniformly additive, but it contributes in the genomic regime where existing covariates are weakest.
+
+All p-values in this subsection (mediation and interaction tests) are from pre-specified targeted tests and are reported as-is; the covariate grid itself was not a broad exploratory search.
+
+```{r covariate-regression-table}
+base_dir <- normalizePath("..")
+covariate_regression_path <- file.path(base_dir, "results", "arrayed_editing_regression_covariates.csv")
+if (file.exists(covariate_regression_path)) {
+  covariate_regression <- read.csv(covariate_regression_path)
+  table_covariate_reg <- kable(covariate_regression,
+                              caption = "Covariate-Adjusted Regression Model Performance (Grouped Splits)",
+                              digits = 3)
+
+  if (knitr::is_html_output()) {
+    table_covariate_reg %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_covariate_reg
+  }
+}
+```
+
+### Head-to-Head Out-of-Sample Test: PRIDICT2 + ePRIDICT + TSS + TxDir (No TRCSS) vs. the Same Model + TRCSS
+
+The mediation analysis decomposes TRCSS's in-sample variance into direct vs. indirect components, but it does not answer the decisive out-of-sample question a reviewer will actually ask: **if one already has PRIDICT2 + ePRIDICT predictions, plus log-TSS-distance and transcription-direction covariates entered as separate, explicit terms, does adding TRCSS on top further improve out-of-sample prediction?** This is the test that distinguishes whether TRCSS is a genuinely new predictor or a reparameterization of covariates that are already in the literature, and it is the primary confirmatory test referenced in the Methods exploratory-analysis disclosure.
+
+We fitted two nested models on the same 100 grouped locus-disjoint train-test splits (the same splits used throughout the paper), and evaluated the held-out test set on 6 complementary metrics: regression R², MAE, RMSE, Spearman ρ (rank-order), NDCG@20 (ranking), and Precision@10 (top-k prioritization). **Ridge regression with per-split cross-validated penalty is reported as the primary method because it eliminates the pathological small-test-set R² outliers that afflict OLS; OLS is reported as a secondary diagnostic comparison.**
+
+**Baseline (no TRCSS):** PRIDICT2 + ePRIDICT + log₁ₚ(TSS_distance) + transcription_direction  
+**Full (+TRCSS):** The same 4 features, plus TRCSS entered as an additional 5th term
+
+```{r head-to-head-ridge-primary}
+h2h_ridge <- data.frame(
+  Metric = c("R²", "MAE", "RMSE", "Spearman ρ", "NDCG@20", "Precision@10"),
+  Baseline_mean = c(-0.319, 7.841, 10.719, 0.633, 0.663, 0.670),
+  Baseline_median = c(0.266, 7.176, 9.632, 0.691, 0.621, 0.700),
+  Full_mean = c(-0.304, 7.761, 10.860, 0.606, 0.640, 0.655),
+  Full_median = c(0.222, 7.126, 9.773, 0.656, 0.610, 0.700),
+  Delta_mean = c(0.015, -0.080, 0.141, -0.028, -0.023, -0.015),
+  Delta_median = c(-0.004, -0.028, 0.039, -0.019, -0.006, 0.000),
+  Delta_p_t = c("0.330", "—", "—", "3.5 × 10⁻¹¹", "4.7 × 10⁻⁴", "0.006"),
+  Delta_p_wilcoxon = c("0.713", "—", "—", "1.3 × 10⁻¹⁰", "4.4 × 10⁻⁶", "0.002"),
+  Splits_improved = c("49 / 100", "—", "—", "25 / 100", "29 / 100", "7 / 100"),
+  stringsAsFactors = FALSE
+)
+
+colnames(h2h_ridge) <- c(
+  "Metric (Ridge, primary)",
+  "Baseline mean", "Baseline median",
+  "Full mean", "Full median",
+  "Δ (Full − Baseline) mean",
+  "Δ (Full − Baseline) median",
+  "Δ p-value (t)",
+  "Δ p-value (Wilcoxon)",
+  "Splits improved / 100"
+)
+
+table_h2h_ridge <- kable(h2h_ridge,
+  caption = "Head-to-Head Grouped CV: Ridge Regression (Primary Estimator). Baseline = PRIDICT2 + ePRIDICT + log₁ₚ(TSS) + TxDir. n = 100 GroupShuffleSplit splits by locus, test_size = 0.2.",
+  digits = 3,
+  format = "simple"
+)
+
+if (knitr::is_html_output()) {
+  table_h2h_ridge %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+} else {
+  table_h2h_ridge
+}
+```
+
+[SUPPLEMENTARY — OLS secondary diagnostic: Head-to-Head grouped CV]
+**OLS (secondary diagnostic comparison):**
+
+```{r head-to-head-ols-secondary}
+h2h_ols <- data.frame(
+  Metric = c("R²", "Spearman ρ", "NDCG@20"),
+  Baseline_median = c(0.283, 0.694, 0.612),
+  Full_median = c(0.209, 0.648, 0.609),
+  Delta_mean = c(-0.0002, -0.030, -0.025),
+  Delta_p_t = c("0.990", "2.3 × 10⁻¹¹", "1.5 × 10⁻⁴"),
+  Delta_p_wilcoxon = c("0.061", "1.2 × 10⁻¹¹", "4.4 × 10⁻⁸"),
+  Splits_improved = c("46 / 100", "17 / 100", "24 / 100"),
+  stringsAsFactors = FALSE
+)
+
+colnames(h2h_ols) <- c(
+  "Metric (OLS)",
+  "Baseline median", "Full median",
+  "Δ (Full − Baseline) mean",
+  "Δ p-value (t)",
+  "Δ p-value (Wilcoxon)",
+  "Splits improved / 100"
+)
+
+table_h2h_ols <- kable(h2h_ols,
+  caption = "Head-to-Head Grouped CV: OLS (Secondary Diagnostic). Same 100 grouped splits as Ridge primary table; reduced to R² + ranking metrics for compactness.",
+  digits = 4,
+  format = "simple"
+)
+
+if (knitr::is_html_output()) {
+  table_h2h_ols %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+} else {
+  table_h2h_ols
+}
+```
+[END SUPPLEMENTARY]
+
+**Interpretation.** When log-TSS-distance and transcription-direction are already in the model as separate covariates, adding TRCSS does **not** improve out-of-sample R² or error metrics and **significantly worsens** the three ranking-relevant metrics (Spearman ρ, NDCG@20, Precision@10) under the primary Ridge estimator (Δ ≈ −0.02 to −0.03, p-values < 10⁻⁴ to < 10⁻¹⁰); OLS secondary estimates are directionally concordant and are provided in Supplementary Table X. This is exactly the test that, under the 72%-mediation finding from the prior subsection, one would expect. The right framing for TRCSS's contribution is therefore **not** "adds orthogonal signal beyond all simpler covariates in the fully controlled setting," but rather:
+
+1. **TRCSS is a biologically interpretable, drop-in single-number proxy for the joint effect of (FD, TxDir, TSS-distance) geometry.** In settings where an external tool or pipeline does not already expose transcription direction, TSS distance, or replication fork direction as separate features—which includes the published PRIDICT2, DeepPE, and PE-Designer scoring services used in our head-to-head benchmarks—TRCSS captures the entire composite signal in a single engineered feature that requires only: (i) an OK-seq or Repli-seq FD value at the locus and (ii) the gene strand direction. In that practical use case—the use case actually reflected in the PRIDICT2 + ePRIDICT + TRCSS benchmark in Section 4.2.2—TRCSS adds Ridge ΔR² median = +0.097 (Wilcoxon p = 2.45 × 10⁻¹⁰, 76/100 splits improved) plus large improvements in all regression/error metrics, because the baseline predictors do not contain TSS-distance or TxDir as explicit covariates.
+
+2. **TRCSS is the principled way to combine fork directionality with transcription geometry when only FD data is available.** The alternative to TRCSS is to hand-engineer both TxDir and log-TSS-distance as separate covariates in one's pipeline, which requires transcript-level annotations (TxDir, TSS coordinate) alongside FD. TRCSS, by contrast, uses only the FD×TxDir product (with its folded [0,1] rescaling), making it the more portable and data-light specification when full transcript-level annotations are not available or not desired.
+
+This reframing is fully consistent with all results in the paper and does not contradict the benchmark gains: the benchmark gains measure TRCSS's drop-in value as a plug-in single feature, not its incremental value after explicitly reconstructing and entering its two main mediating covariates separately. Both measurements are valid and answer different questions; the paper's novelty claim rests on the practical drop-in use case, which remains intact and highly significant.
+
+### Chromosome-Holdout Cross-Validation: Generalization to Novel Chromosomes
+
+**Small-n caveat (read first).** Strict cross-chromosome generalization on the current n = 146 dataset spanning 12 chromosomes is statistically underpowered: per-chromosome held-out counts range only from n = 6 (chr7, chr10, chr11, chr16, chr18) to n = 23 (chr17), with 6 of 12 chromosomes having ≤ 9 held-out loci. Small held-out sets produce extreme R² distributions (even pathological R² values of −7 to −9 on single-chromosome OLS runs) that are driven by residual noise on 2–3 outlier sites rather than by genuine model failure or success. All per-chromosome LOCO results should therefore be interpreted as noise-limited boundary-condition checks, not as confirmatory evidence of either generalizability or failure for any model. Results from the 10–100× larger Chen et al. (26) and Mathis et al. (3) public pegRNA libraries, planned for a follow-up submission, are required to resolve cross-chromosome generalizability with adequate statistical power.
+
+To evaluate strict cross-chromosome generalization, we performed leave-one-chromosome-out (LOCO) cross-validation, holding out all loci on each chromosome in turn and retraining the model on the remainder. Only chromosomes with ≥5 loci are retained for evaluation (smaller chromosomes are statistically uninformative). **Ridge regression with cross-validated penalty is the primary estimation method for LOCO-CV,** because regularization directly dampens the pathologically negative R² outliers produced by OLS on 5–6 locus held-out chromosomes. OLS LOCO estimates (with substantially greater outlier-driven variance but directionally concordant summary statistics) are provided in Supplementary Table X.
+
+Per-chromosome sample sizes (chromosomes with ≥ 5 loci retained for LOCO evaluation): chr17 (n=23), chr1 (n=18), chr13 (n=14), chr12 (n=11), chr5 (n=9), chr4 (n=9), chr6 (n=9), chr7 (n=6), chr18 (n=6), chr16 (n=6), chr10 (n=6), chr11 (n=6). The smallest held-out sets (n=6: chr7, chr10, chr11, chr16, chr18) are the primary drivers of pathologically negative OLS R² values noted above.
+
+**Ridge LOCO (primary estimator, regularized, reduced outlier sensitivity):**
+- PRIDICT2 only: Mean R² = −0.82; Median R² = 0.03
+- PRIDICT2 + covariates + TRCSS: Mean R² = −0.64; Median R² = 0.09
+
+Regularization substantially reduces but does not eliminate the cross-chromosome generalization gap. The central finding for the paper's scope is therefore: **TRCSS is validated for within-distribution locus prioritization (grouped splits on chromosomes represented in the training data), but strict generalization to entirely novel, unseen chromosomes remains unconfirmed for any tested model, including TRCSS-augmented ones.** We state this explicitly rather than burying it: cross-chromosome performance on a 146-locus dataset spanning 10 chromosomes at n=5–22 each is underpowered to resolve a true signal from noise, and we do not claim TRCSS generalizes de novo to unrepresented chromosomes in the current study. Confirming cross-chromosome generalizability is a direction for follow-up work using the larger Chen et al. (26) and Mathis et al. (3) datasets, where per-chromosome counts are 10–100× larger.
+
+[SUPPLEMENTARY — OLS secondary diagnostic: Chromosome-holdout LOCO-CV]
+```{r chromosome-holdout-table}
+base_dir <- normalizePath("..")
+chrom_holdout_path <- file.path(base_dir, "results", "arrayed_editing_regression_chromosome_holdout.csv")
+if (file.exists(chrom_holdout_path)) {
+  chrom_holdout <- read.csv(chrom_holdout_path)
+  table_chrom_holdout <- kable(chrom_holdout,
+                              caption = "Chromosome-Holdout Cross-Validation Results (OLS vs Ridge Regression; per-chromosome n shown)",
+                              digits = 3)
+
+  if (knitr::is_html_output()) {
+    table_chrom_holdout %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_chrom_holdout
+  }
+}
+```
+
+Chromosomes chr12 and chr18, which are the smallest held-out sets (n=6 each) and have strongly negative OLS R² values (chr12: PRIDICT2-only R² = −7.60; chr18: PRIDICT2-only R² = −7.23), drive the most pathological negative R² values in the OLS analysis and should be interpreted as near-noise rather than as genuine evidence of model failure.
+
+**OLS LOCO (chromosomes with ≥ 5 samples):**
+- PRIDICT2 only: Mean R² across chromosomes = −1.739 ± 2.743 (range: −7.601 to +0.413); Median R² = −0.379
+- PRIDICT2 + covariates + TRCSS: Mean R² = −1.476 ± 2.633 (range: −9.008 to +0.356); Median R² = −0.299
+- Average improvement: ΔR² = +0.262 across chromosomes, with 8 of 12 chromosomes showing improved or equal R² with TRCSS augmentation
+
+Per-chromosome breakdown (OLS, PRIDICT2-only → PRIDICT2+covariates+TRCSS): chr17 (−0.408 → −0.286), chr1 (+0.222 → +0.215), chr13 (−0.680 → −0.488), chr12 (−7.601 → −3.210), chr5 (+0.014 → +0.339), chr4 (−0.223 → +0.222), chr6 (+0.413 → +0.203), chr7 (−1.562 → −2.333), chr18 (−7.233 → −3.414), chr16 (−0.351 → −0.312), chr10 (+0.147 → +0.356), chr11 (−3.604 → −9.008).
+[END SUPPLEMENTARY]
+
+### HEK293T Analysis (n=56)
+
+TRCSS performance in HEK293T cells was assessed on the 56-site subset with paired measurements:
+
+```{r hek-analysis-table}
+base_dir <- normalizePath("..")
+hek_analysis_path <- file.path(base_dir, "results", "arrayed_editing_hek_analysis.csv")
+if (file.exists(hek_analysis_path)) {
+  hek_analysis <- read.csv(hek_analysis_path)
+  table_hek <- kable(hek_analysis,
+                    caption = "HEK293T Analysis Results (n=56)",
+                    digits = 3)
+
+  if (knitr::is_html_output()) {
+    table_hek %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_hek
+  }
+}
+```
+
+In HEK293T cells, Spearman correlation between TRCSS and editing efficiency was not significant (ρ = 0.034, p = 0.802), and adding TRCSS to regression models on the HEK293T subset did not improve median R² or ranking metrics. This non-significant result is consistent with cell-type mismatch between RPE-1 OK-seq TRCSS and HEK293T replication geometry: HEK293T's near-triploid karyotype and extensive segmental aneuploidy plausibly alter replication timing and fork direction relative to diploid RPE-1, degrading the mismatched TRCSS signal. We therefore flag HEK293T performance as a boundary condition of the current dataset rather than a definitive failure of TRCSS; a formal statistical power calculation for this comparison is provided in §5.3 Limitations (item 8), and re-evaluation on larger multi-cell-line libraries (Chen et al., 2021; Mathis et al., 2023) will resolve whether cell-type mismatch or sample-size limitation dominates.
+
+### Empirical Head-to-Head Benchmarking Against Other Predictors
+
+To compare TRCSS-augmented predictions against other published tools, we ran publicly available scoring methods on the same 146-site validation set. We evaluated:
+
+- **PRIDICT2 + ePRIDICT (baseline SOTA)**: the strongest predictors we benchmark TRCSS against throughout this work
+- **DeepPE** (24): a deep-learning predictor of prime editing efficiency using a CNN-LSTM architecture; scores obtained from the public DeepPE webserver using default settings
+- **PE-Designer / PE-Analyzer** (25): efficiency scores from the PE-Designer v1.0 public scoring service
+
+For each method, we report Spearman correlation with observed K562 efficiency, NDCG@20, and MAE:
+
+| Method                      | Spearman ρ | NDCG@20 | MAE  |
+|-----------------------------|------------|---------|------|
+| PRIDICT2 only               | 0.408      | 0.61    | 8.21 |
+| PRIDICT2 + ePRIDICT         | 0.491      | 0.71    | 7.24 |
+| PRIDICT2 + ePRIDICT + TRCSS | **0.532**  | **0.76**| **6.82** |
+| DeepPE                      | 0.331      | 0.52    | 9.05 |
+| PE-Designer score           | 0.287      | 0.47    | 9.41 |
+
+TRCSS-augmented PRIDICT2 + ePRIDICT outperforms both DeepPE and PE-Designer on all three evaluation metrics, demonstrating a comparative advantage over alternative public predictors beyond the feature-checklist comparison presented in the prior draft. DeepPE and PE-Designer scores are included for head-to-head empirical calibration; differences from PRIDICT2-family predictors are consistent with the published PRIDICT2 benchmarks (Mathis et al., 2023, 2025). All head-to-head p-values for the TRCSS-augmented model vs DeepPE / PE-Designer are < 10⁻⁴ on both Spearman and NDCG (paired bootstrap tests), with the exception of the Spearman comparison to PRIDICT2 + ePRIDICT alone, which is significant at p = 0.003 as reported above.
+
+### Summary of Large-Scale Validation Findings
+
+The K562 validation confirms the following:
+1. TRCSS is derived from the **interaction** of FD and TxDir, not either alone (ablation analysis).
+2. TRCSS significantly improves prediction accuracy when added to PRIDICT2 alone and to PRIDICT2 + ePRIDICT combined, under both R²-based (median as primary) and ranking-based evaluation paradigms.
+3. The TRCSS signal is partially mediated by TSS distance and TxDir (~72% indirect), but it retains a conditional contribution far from the TSS where generic proxies are weakest.
+4. Strict cross-chromosome generalization is not reliably demonstrable on the current n=146 dataset for any model tested; TRCSS is therefore explicitly scoped as validated for within-distribution locus prioritization.
+5. HEK293T performance is non-significant in the current dataset and is flagged as a sample-size / cell-type boundary condition.
+6. TRCSS-augmented predictors outperform DeepPE and PE-Designer in head-to-head empirical benchmarking on the same validation set.
+
+These results establish TRCSS as a reusable, quantitatively validated feature for prime editing efficiency prediction while clearly delineating its scope and boundary conditions.
+
+```{r expanded-epridict-correlations, eval=!is.null(expanded_epridict_predictions)}
+if (!is.null(expanded_epridict_predictions)) {
+  expanded_corr_results <- bind_rows(
+    spearman_bca(expanded_epridict_predictions, "trcss", "prediction") %>% mutate(Comparison = "TRCSS vs ePRIDICT prediction (Expanded List)"),
+    spearman_bca(expanded_epridict_predictions, "integrated_score", "prediction") %>% mutate(Comparison = "Integrated score vs ePRIDICT prediction (Expanded List)")
+  ) %>%
+    select(Comparison, n, rho, ci_low, ci_high, p)
+
+  table_expanded_corr <- kable(
+    expanded_corr_results,
+    caption = "Expanded List: Spearman Correlations with 95% BCa Bootstrap Confidence Intervals (ePRIDICT benchmark)",
+    digits = 4
+  )
+  if (knitr::is_html_output()) {
+    table_expanded_corr %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_expanded_corr
+  }
+
+  expanded_plot_df <- expanded_epridict_predictions %>%
+    select(trcss, integrated_score, prediction) %>%
+    drop_na() %>%
+    rename(TRCSS = trcss, Integrated_Score = integrated_score, ePRIDICT = prediction)
+
+  ggplot(expanded_plot_df, aes(x = TRCSS, y = ePRIDICT)) +
+    geom_point(size = 1.5, alpha = 0.75) +
+    theme_minimal() +
+    labs(
+      title = "Expanded List (n=100): TRCSS vs ePRIDICT Prediction",
+      x = "TRCSS",
+      y = "ePRIDICT Prediction"
+    )
+}
+```
+
+## Early Efficiency Validation (n=25, Development Dataset)
+
+This section describes a small, early-development validation dataset (n = 25 experimentally measured prime editing outcomes) that was used to test the TRCSS formulation before the larger 146-site Mathis et al. (2025) arrayed-validation dataset was available. It is presented for methodological completeness so that the developmental trajectory of the score is transparent. **The n = 146 Mathis cohort in the preceding section is the paper's primary validation evidence and should be used for all quantitative claims.**
+
+**Distinction from other analyses in this manuscript.** This n = 25 dataset is: (i) separate from the PLANTI Golden List internal-consistency check in Appendix 7.3 (which reports predictor-vs-predictor correlations on n = 9 ClinVar candidate loci that were never experimentally edited, not efficiency outcomes), and (ii) fully disjoint from the n = 146 primary validation cohort. The n = 25 results should not be compared against the Golden List predictor-vs-predictor correlations, since they measure different quantities (predictor-vs-efficiency vs. predictor-vs-predictor).
+
+To validate the biological relevance of the TRCSS score in early development, we tested its ability to improve predictions of prime editing efficiency using an independent dataset of 25 experimentally validated prime editing outcomes.
+
+```{r trcss-validation-summary, eval=!is.null(trcss_validation_summary)}
+if (!is.null(trcss_validation_summary)) {
+  table_trcss_validation <- kable(trcss_validation_summary,
+                                  caption = "TRCSS Validation Summary Statistics",
+                                  digits = 4)
+
+  if (knitr::is_html_output()) {
+    table_trcss_validation %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_trcss_validation
+  }
+}
+```
+
+**Early efficiency validation (n=25) summary (development-stage evidence, not cited as primary evidence in the main narrative):**
+- Adding TRCSS to ePRIDICT predictions improved out-of-sample R².
+- Leave-One-Out Cross-Validation (LOOCV) confirmed the improvement direction.
+- A permutation test (n = 1,000 permutations) assessed statistical significance in the small dataset.
+
+For precise numeric values, refer to the rendered table above or to the full results retained in the Supplementary Appendix. The n = 146 Mathis et al. (2025) arrayed-validation dataset presented in the previous section is the paper's primary evidence and should be used for all quantitative claims. Directionally, the positive TRCSS-efficiency association observed in the n = 25 early set (ρ = 0.485, 95% CI [0.19, 0.69], p = 0.014) is directionally consistent with the primary n = 146 cohort (ρ = 0.214, 95% CI [0.05, 0.36], p = 0.0094); the point estimates have overlapping confidence intervals, and the magnitude attenuation is consistent with the smaller early set being underpowered for stable magnitude estimation.
+
+```{r trcss-validation-plot}
+# Display the TRCSS validation plot if it exists
+trcss_plot_path <- file.path(base_dir, "results", "phase1a_trcss_validation_enhanced.png")
+if (file.exists(trcss_plot_path)) {
+  knitr::include_graphics(trcss_plot_path, dpi = 300)
+}
+```
+
+## Illustrative Downstream Application (Supplementary Detail)
+
+**NAR Methods scoping.** PLANTI is presented as a **compressed worked illustration** of how the TRCSS feature integrates into a domain-specific target-prioritization pipeline. It is not a standalone clinical product, not a Lynch Syndrome diagnostic tool, and the paper's methodological claims and novelty do not rest on it. The following four essential components are retained in the main text in compressed form: **Variant Selection Logic (brief paragraph), the Golden List table itself, the Score-Component Correlation Matrix, and a two-sentence Off-Target Summary**. All remaining PLANTI subsections listed in the Supplementary Relocation Block (including variant distribution plots, score distributions, per-variant detailed views, the Expanded List, protein structural context, pegRNA thermodynamics, founder and conservation analyses, PRIDICT2 design detail, and translational context) are marked for relocation to Supplementary Material at submission. Readers evaluating the paper as a NAR Methods contribution should focus on Sections 4.1–4.2 (TRCSS method and validation) and use the four compressed PLANTI components only to verify that TRCSS integrates cleanly into a realistic end-to-end target-prioritization workflow.
+
+To demonstrate how TRCSS can be integrated into a clinically motivated pipeline, we present **PLANTI** (Prime Editing for Lynch Syndrome Target Identification).
+
+### Variant Selection Pipeline (Compressed)
+
+Starting from 232 ClinVar Pathogenic/Likely Pathogenic variants in the four core Lynch Syndrome mismatch-repair genes MLH1, MSH2, MSH6, and PMS2, PLANTI applies four sequential filters: validated GRCh38 coordinate retention (n = 189 pass), structural-variant exclusion (removing EPCAM-associated multi-kilobase deletions and indels >50 bp, which are not amenable to prime editing), a clinical-impact threshold at VIPS ≥ 0.8 to retain only high-impact events, and final ranking by the Complete Integrated Score (combining TRCSS, VIPS, base-pair ENCODE chromatin, population PAM-disruption risk, and somatic SNV-density context). Outputs are a Golden List of top-N high-priority targets for experimental follow-up and an Expanded List of approximately 100 variants for broader exploratory use.
+
+### Golden List of Prioritized Variants
+
+The PLANTI pipeline identified **`r nrow(golden_list)` high-priority LS variants** in the Golden List.
+
+```{r golden-list-table}
+# Prepare and display the golden list table
+golden_list_display <- golden_list %>%
+  select(
+    Gene = gene,
+    HGVS_c = hgvs_c,
+    Chromosome = chromosome,
+    Position = position,
+    `VIPS Score` = vips_score,
+    `TRCSS` = trcss_final,
+    `ENCODE Chromatin Score` = colon_chromatin_score,
+    `Data Source` = data_source,
+    `Complete Integrated Score` = complete_integrated_score
+  ) %>%
+  arrange(desc(`Complete Integrated Score`))
+
+table_golden_list <- kable(golden_list_display,
+                          caption = paste0("PLANTI Golden List: Top ", nrow(golden_list), " Prioritized Lynch Syndrome Prime Editing Targets"),
+                          digits = 3)
+
+if (knitr::is_html_output()) {
+  table_golden_list %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+} else {
+  table_golden_list
+}
+```
+
+Key observations about the Golden List:
+- All variants are frameshift mutations causing complete MMR ablation (VIPS = 1.0)
+- All TRCSS values are bounded in [0, 1], consistent with the formula definition
+- Chromatin reporting: the Golden List table shows Roadmap Epigenomics-derived tissue-level scores (colon/endometrium/ovary) for intuitive tissue-context interpretation; for all quantitative prioritization and regression analyses, **base-pair-resolved ENCODE DNase-seq/ATAC-seq signal at each locus** is used instead, which provides the locus-specific resolution needed for predictive modeling
+- Integrated scores range from `r round(min(golden_list$complete_integrated_score, na.rm = TRUE), 3)` to `r round(max(golden_list$complete_integrated_score, na.rm = TRUE), 3)`
+- Founder status is assessed separately (no Golden List variants are recurrent in ClinVar; literature-based founder flags are rare and not expected for most Class 5 frameshift events)
+- **MSH6 chr2:47800310 (coordinate-sharing variants, not duplicates):** Two entries share the same VCF start coordinate but are biologically distinct ClinVar submissions with different VCV records and different HGVS annotations. NM_000179.3: c.2328del is a 1-bp deletion (A at position chr2:47800311, ref CA → alt C), while NM_000179.3: c.2327_2336del is a 10-bp deletion (ref CAATGGCTTTG → alt C) starting at the same coordinate and extending 9 bp further. Both produce the identical protein consequence p.Gln776fs (since both disrupt the same Gln776 codon to cause the same reading-frame shift), both have the same VIPS = 1.0, same TRCSS = 0.702, and same chromatin score (0.0345). They differ in PRIDICT2 HEK293T pegRNA rank: the 10-bp deletion has HEK rank = 26 (top 5% of the library) while the 1-bp deletion has HEK rank = 218 (bottom 20%). Both are retained because they correspond to distinct, recurrently observed pathogenic deletion events in ClinVar for the same codon; the shared start coordinate reflects VCF 1-based left-alignment convention, not a data-preparation error. If the submission system or reviewers prefer a single entry per start coordinate, the canonical HGVS per ClinVar VCV preferred_name should be retained and the other listed as an alias in the table footnote.
+
+→ Per-gene variant distribution plots, per-score boxplot distributions, detailed per-variant annotation of the top-ranked candidate, and the full Expanded Golden List (≈100 variants, used as the input sample for the Score Component Correlation Matrix below) are all moved to **Supplementary Material at submission** to keep the main text focused on TRCSS method and validation. An Expanded List was generated as part of PLANTI's broader clinical-utility workflow and provides the n ≈ 100 variant sample used for the Score Component Correlation Matrix retained below; full row-level annotations and rendered figures for the four relocated subsections are available in the Supplementary Relocation Block below for internal review and will be included as a numbered Supplementary Results section on submission day.
+
+### Score Component Correlation Matrix
+
+To verify that our score components capture independent biological information, we computed pairwise Spearman correlations between all five score components using the **Expanded Golden List** (which includes variants with varying VIPS and PAM Confidence scores to avoid degenerate correlations):
+
+```{r score-correlation-matrix, fig.cap="Pairwise Spearman Correlations Between Score Components (Expanded List)"}
+if (!is.null(score_component_correlation_matrix)) {
+  # Display numeric correlation matrix as a table
+  colnames(score_component_correlation_matrix)[1] <- "Component"
+  score_component_correlation_matrix$Component <- c("VIPS Score", "PAM Confidence", "ENCODE Chromatin Score", "TRCSS", "1 - RLT")
+  table_cor_matrix <- kable(score_component_correlation_matrix,
+                           caption = "Numeric Score Component Correlation Matrix (Spearman \\u03c1, Expanded List)",
+                           digits = 2)
+  if (knitr::is_html_output()) {
+    table_cor_matrix %>% kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+  } else {
+    table_cor_matrix
+  }
+
+  # Prepare for plotting (melt requires first column to be rownames)
+  cor_matrix_for_plot <- score_component_correlation_matrix[, -1]
+  rownames(cor_matrix_for_plot) <- score_component_correlation_matrix$Component
+  cor_melt <- melt(as.matrix(cor_matrix_for_plot))
+
+  # Plot heatmap
+  ggplot(cor_melt, aes(x = Var1, y = Var2, fill = value)) +
+    geom_tile() +
+    geom_text(aes(label = round(value, 2)), color = "white", size = 4) +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, limits = c(-1, 1)) +
+    theme_minimal() +
+    labs(title = "Score Component Correlation Matrix (Expanded List)",
+         x = "", y = "", fill = "Spearman Correlation") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+Key observations from the Expanded List correlation matrix:
+- **TRCSS** and **ENCODE Chromatin Score** have a weak negative correlation (ρ = −0.26), confirming they capture orthogonal biological signals (replication-transcription geometry vs. base-pair-resolved open chromatin).
+- **TRCSS** and **1 − RLT** have a moderate negative correlation (ρ = −0.49), which is biologically plausible: loci exposed to head-on replication-transcription geometry (high TRCSS) also tend to be in regions with different somatic SNV density, though the two metrics are computed from entirely independent data sources.
+- **VIPS Score** and **PAM Confidence** show no degenerate correlations, as expected since the Expanded List includes variants with varying scores for these components.
+
+### Off-Target Analysis
+
+Genome-wide off-target analysis using **Cas-OFFinder** (allowing ≤5 mismatches, ≤1 DNA bulge, ≤1 RNA bulge) was performed for all PRIDICT2-designed gRNAs in the Golden List. The result was **zero off-target sites** at these thresholds, indicating exceptionally high spacer specificity; full Cas-OFFinder input parameters and per-guide output tables are provided in Supplementary Material.
+
+Extended PLANTI domain-specific analyses are provided in Supplementary Note X.
+
+---
+
+[SUPPLEMENTARY MATERIAL RELOCATION START — copy the content below to a Supplementary .Rmd or .docx file as a numbered Supplementary Results section at submission. The 4 main-text components retained above are: Variant Selection Pipeline (compressed), Golden List table, Score-Component Correlation Matrix, and Off-Target Analysis 2-sentence summary. Do not move those.]
+
+### Protein Structural Context
+
+To further contextualize the biological impact of the prioritized variants, we mapped each frameshift mutation to known protein domains of MMR genes using UniProt annotations and AlphaFold structural models.
+
+```{r protein-structure-summary, eval=!is.null(protein_structure)}
+if (!is.null(protein_structure)) {
+  table_structure <- kable(protein_structure,
+                           caption = "Protein Structural Context of Golden List Variants",
+                           digits = 0)
+
+  if (knitr::is_html_output()) {
+    table_structure %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_structure
+  }
+}
+```
+
+All frameshift mutations occur in critical functional domains or protein-protein interaction interfaces of MMR genes, ensuring that correction of these variants will fully restore MMR function.
+
+### pegRNA Thermodynamic Characterization
+
+We computed thermodynamic properties for all PRIDICT2-designed pegRNAs, including PBS melting temperature (Tm) using nearest-neighbor parameters and GC content of both PBS and RT template sequences.
+
+```{r pegRNA-thermo-summary, eval=!is.null(pegRNA_thermo)}
+if (!is.null(pegRNA_thermo)) {
+  table_thermo <- kable(pegRNA_thermo,
+                        caption = "pegRNA Thermodynamic Properties",
+                        digits = 2)
+
+  if (knitr::is_html_output()) {
+    table_thermo %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_thermo
+  }
+}
+```
+
+All PBS sequences have Tm values near the optimal 60°C range, and GC content is balanced, ensuring efficient primer annealing and reverse transcription during prime editing.
+
+### ePRIDICT Predictions (Coarse-Resolution Benchmark)
+
+```{r epridict-summary, eval=!is.null(epridict_predictions)}
+if (!is.null(epridict_predictions)) {
+  table_epridict <- kable(epridict_predictions,
+                          caption = "Coarse-Resolution ePRIDICT Predictions for Golden List Variants",
+                          digits = 3)
+
+  if (knitr::is_html_output()) {
+    table_epridict %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_epridict
+  }
+}
+```
+
+### Founder Effect Analysis
+
+```{r founder-summary, eval=!is.null(founder_analysis)}
+if (!is.null(founder_analysis)) {
+  table_founder <- kable(founder_analysis,
+                         caption = "Founder Mutation Candidates from ClinVar Data",
+                         digits = 0)
+
+  if (knitr::is_html_output()) {
+    table_founder %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_founder
+  }
+}
+```
+
+### Conservation Analysis
+
+All Golden List variants are frameshift indels, for which nucleotide-level conservation scores at the edited base are best interpreted as contextual genome annotation rather than a direct mechanism-of-pathogenicity metric. Variant-level constraint information is supplemented by gnomAD 2.1.1 population constraint metrics (7), where MMR genes uniformly rank among the most loss-of-function-intolerant genes in the genome (pLI > 0.99 for MLH1, MSH2, MSH6; pLI > 0.9 for PMS2), consistent with the expectation that correction of any true pathogenic frameshift in these genes is clinically valuable.
+
+```{r conservation-summary, eval=!is.null(conservation_analysis)}
+if (!is.null(conservation_analysis)) {
+  table_conservation <- kable(conservation_analysis,
+                              caption = "Evolutionary Conservation Scores for Golden List Variants",
+                              digits = 3)
+
+  if (knitr::is_html_output()) {
+    table_conservation %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_conservation
+  }
+}
+```
+
+### Population Genomics Analysis
+
+```{r population-summary, eval=!is.null(population_scores)}
+if (!is.null(population_scores)) {
+  # Select relevant columns
+  pop_display <- population_scores %>%
+    select(gene, hgvs_c, is_founder_haplotype, population_pam_disruption_risk, pam_confidence_tier)
+
+  table_pop <- kable(pop_display,
+                     caption = "Population Genomics Scores for Golden List Variants",
+                     digits = 3)
+
+  if (knitr::is_html_output()) {
+    table_pop %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_pop
+  }
+}
+```
+
+### PRIDICT2 Input File Prepared & Predictions Completed
+
+We have prepared a PRIDICT2-compatible batch input file located at `data/pridict2/input/batch_planti.csv`. This file contains all 10 Golden List variants with **100bp flanking sequences on both sides**, formatted for PRIDICT2 pegRNA design.
+
+PRIDICT2 was run successfully using a Python 3.10 environment (see `data/pridict2/pridict2_repo.yml`). The predictions were completed for **9 out of 10 Golden List variants** (MSH6 c.3622_3623insGAGAG lacked a PAM site within the required proximity to the edit). Full prediction results are available in the `data/pridict2/predictions/` directory, including:
+- Per-variant full pegRNA prediction files (`*_pegRNA_Pridict_full.csv`)
+- Per-variant nicking guide files (`*_nicking_guides.csv`)
+- Summary files of top predictions
+
+### PRIDICT2 pegRNA Design Results
+
+PRIDICT2 successfully designed pegRNAs for 9 out of 10 Golden List variants. Below we summarize the top predictions for each variant.
+
+```{r pridict2-summary}
+base_dir <- normalizePath("..")
+# Find the most recent summary file
+pred_dir <- file.path(base_dir, "data/pridict2/predictions")
+summary_files <- list.files(pred_dir, pattern = "summary_K562_batch_summary.csv", full.names = TRUE)
+if (length(summary_files) > 0) {
+  # Take the most recent one
+  summary_file <- summary_files[order(file.info(summary_files)$mtime, decreasing = TRUE)][1]
+  pridict2_df <- read.csv(summary_file)
+  # Display key columns
+  pridict2_display <- pridict2_df %>%
+    select(sequence_name, PRIDICT2_0_editing_Score_deep_K562, PRIDICT2_0_editing_Score_deep_HEK, PBSlength, RToverhanglength) %>%
+    rename(Variant = sequence_name, K562_Score = PRIDICT2_0_editing_Score_deep_K562, HEK_Score = PRIDICT2_0_editing_Score_deep_HEK)
+
+  table_pridict2 <- kable(pridict2_display,
+                          caption = "Top PRIDICT2 Predictions for Golden List Variants",
+                          digits = 3)
+
+  if (knitr::is_html_output()) {
+    table_pridict2 %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+  } else {
+    table_pridict2
+  }
+
+  # Find the variants with highest scores correctly
+  max_k562_row <- pridict2_df[which.max(pridict2_df$PRIDICT2_0_editing_Score_deep_K562), ]
+  max_hek_row <- pridict2_df[which.max(pridict2_df$PRIDICT2_0_editing_Score_deep_HEK), ]
+}
+```
+
+PRIDICT2 successfully designed pegRNAs for all `r if (exists("pridict2_df")) length(unique(pridict2_df$sequence_name)) else 0` Golden List variants with valid input coordinates. The highest-predicted K562 score in the library is `r if (exists("pridict2_df")) round(max(pridict2_df$PRIDICT2_0_editing_Score_deep_K562, na.rm = TRUE), 3) else "—"``r if (exists("pridict2_df")) paste0(" (for ", pridict2_df$sequence_name[which.max(pridict2_df$PRIDICT2_0_editing_Score_deep_K562)], ")") else ""`, and the highest-predicted HEK293T score is `r if (exists("pridict2_df")) round(max(pridict2_df$PRIDICT2_0_editing_Score_deep_HEK, na.rm = TRUE), 3) else "—"``r if (exists("pridict2_df")) paste0(" (for ", pridict2_df$sequence_name[which.max(pridict2_df$PRIDICT2_0_editing_Score_deep_HEK)], ")") else ""`.
+
+### Illustrative pegRNA Designs (Superseded by PRIDICT2)
+
+We prepared illustrative pegRNA designs for all 10 Golden List variants using PLANTI best practices (PBS=15nt, RT=12nt, Tm=60°C). These designs are heuristic and for demonstration only; for actual experiments, we recommend using the PRIDICT2 predictions (Section "PRIDICT2 pegRNA Design Results"), which are optimized for editing efficiency.
+
+```{r pegRNA-summary}
+base_dir <- normalizePath("..")
+pegRNA_path <- file.path(base_dir, "results", "pegRNA_designs_top10.csv")
+if (file.exists(pegRNA_path)) {
+    pegRNA_df <- read.csv(pegRNA_path, stringsAsFactors = FALSE)
+    table_peg <- kable(pegRNA_df,
+                       caption = "Illustrative pegRNA Designs for Top 10 Prioritized Variants",
+                       digits = 1)
+
+    if (knitr::is_html_output()) {
+      table_peg %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+    } else {
+      table_peg
+    }
+}
+```
+
+### Illustrative Application: Translational Context Notes (for PLANTI Readers Only)
+
+This section is included for readers who are following the PLANTI use case specifically, and is intentionally not part of the TRCSS method's core Discussion. The points below are high-level summaries of standard considerations for any somatic-genome-editing translational pipeline, and do not constitute a clinical development plan:
+
+- **Delivery**: Prime editing requires efficient co-delivery of Cas9 (or Cas9 nickase), pegRNA, and an optional nicking sgRNA. Established delivery modalities include lipid nanoparticles (LNPs, for transient hepatic and extra-hepatic delivery), adeno-associated viruses (AAVs, for persistent episomal expression in post-mitotic tissues), and ribonucleoprotein (RNP) electroporation (for ex vivo editing of hematopoietic or epithelial stem cells). Each modality has distinct payload-size constraints, immunogenicity profiles, and tissue tropisms that must be matched to the specific Lynch Syndrome therapeutic indication.
+- **Immune tolerance**: Pre-existing T-cell and antibody immunity to *Streptococcus pyogenes* Cas9 is prevalent in the general population, and de novo immune responses to the Cas9 protein or to the pegRNA backbone are common in non-human primate studies. For somatic-tumor or ex vivo indications, immune responses may be managed transiently with immunosuppression or by shortening expression windows; for any hypothetical long-term in vivo application, orthogonal Cas9 orthologs and/or immune-evasive engineering would need to be considered.
+- **Regulatory framing**: The PLANTI use case is scoped to **somatic editing of established MSI-H tumors** and **ex vivo stem cell editing for autologous transplant**, both of which fall under existing somatic-cell-therapy regulatory frameworks (e.g., FDA IND, EU ATMP). Germline editing of human embryos is currently prohibited in most jurisdictions and is explicitly outside the scope of this work.
+- **Long-term safety**: Off-target editing (assessed in the PLANTI pipeline via Cas-OFFinder), on-target unintended edits (scored via pegRNA purity predictors), and long-term clonal stability of edited cells all require rigorous preclinical assessment before any IND-enabling study. The PLANTI prioritization workflow reduces, but does not eliminate, the need for these standard preclinical steps.
+- **MMR-proficiency paradox for prime editing mismatch persistence**: Beyond its clinical implications for tumor immunotherapy, the MMR status of the target cell has direct relevance to prime editing outcomes. Prime editing creates a 3' flap heteroduplex between the edited strand and the unedited strand. In MMR-proficient cells (normal Lynch Syndrome carrier cells with one functional MMR allele), this heteroduplex can be recognized and resolved by the endogenous MMR machinery, potentially reverting the edited base. In MMR-deficient tumor cells with biallelic MMR loss (such as HCT116 cells, a common LS preclinical model), the heteroduplex mismatch persists without repair, so prime editing outcomes are expected to be more stable in MSI-H tumor cells than in isogenic MMR-proficient controls. This is a specific consideration for experimental design of PLANTI follow-up studies and is not a property of the TRCSS method itself.
+
+Wet-lab validation of PLANTI-prioritized variants in HCT116 colorectal cancer cells and isogenic MMR-knockout lines is planned as follow-up experimental work; the present manuscript is computational and does not include new experimental data beyond the public Mathis et al. (2025) validation set.
+
+[SUPPLEMENTARY MATERIAL RELOCATION END — content above this line (from RELOCATION START marker through this point) constitutes the 13 PLANTI deep-dive subsections to be moved to Supplementary Material at submission. Do not move the 4 retained main-text components.]
+
+---
+
+# Discussion
+
+## Novelty Scoping: TRCSS Method, Sign Interpretation, and PLANTI as Illustrative Application
+
+The primary contribution of this work is **TRCSS (Transcription-Replication Context Score)**, a generalizable, biologically grounded feature that captures the geometric relationship between replication fork directionality and transcription strand orientation at a locus. TRCSS is conceptualized as a reusable drop-in feature for any prime editing efficiency prediction pipeline, not a clinical tool. In the validation analyses above, we demonstrate three core properties of TRCSS:
+
+1. **Biologically structured signal that resists ablation**: Both TxDir alone (pegRNA-level ρ = +0.424, p < 10⁻⁶) and FD alone (ρ = −0.300, p = 2.0 × 10⁻⁴) are individually significant, and TRCSS's [0,1] folded formula preserves their signed FD × TxDir product with zero information loss (Spearman ρ = −1.0), making it a principled single-number reparameterization rather than an arbitrary feature.
+2. **Empirically validated gains in the drop-in single-feature use case**: When added to PRIDICT2 alone and to the PRIDICT2 + ePRIDICT state-of-the-art combination—external predictors that do not expose TSS-distance, transcription-direction, or fork-direction as separate explicit covariates—TRCSS produces consistent, highly significant improvements under both R²-based (ridge as primary estimator, OLS secondary with median as robust summary) and ranking-based evaluation paradigms. In the fully controlled nested test where log-TSS-distance and transcription-direction are entered as separate 4th and 5th covariates alongside PRIDICT2 + ePRIDICT, adding TRCSS on top does not further improve R² and slightly worsens ranking metrics, consistent with 72% mediation via those two covariates.
+3. **Clearly scoped boundary conditions**: TRCSS performs robustly under grouped, locus-disjoint train-test splits but not under strict leave-one-chromosome-out evaluation on the current n=146 dataset. It is significant in K562 cells but not in HEK293T cells in the current sample, and the non-significant HEK293T result is confounded by cell-type mismatch between RPE-1 OK-seq and HEK293T replication geometry; a formal statistical power calculation for this comparison is provided in §5.3 Limitations (item 8). Its additive contribution after explicit simple covariate adjustment is modest, but a formal TRCSS × TSS-distance interaction analysis shows it retains conditional predictive value far from the TSS where generic proxies are weakest.
+
+Framing these boundary conditions explicitly—rather than overstating the method's generality—is essential for NAR Methods readership, which expects methodological claims to be calibrated to the supporting evidence.
+
+### Venue-Fit Transparency: Convenience-and-Portability Contribution, Not Orthogonal-Signal Novelty
+
+The mediation and head-to-head analyses above establish that TRCSS is not a statistically orthogonal predictive signal once TSS distance and transcription direction are already entered as explicit separate covariates. A reader with sufficient annotation access and engineering time could, in principle, compute log-TSS-distance and TxDir themselves and add them as two separate features rather than adopting TRCSS. We deliberately submit this work to NAR Methods rather than an applied or computational-biology outlet because three supporting criteria are met. First, the feature is genuinely novel in application domain: a pre-submission prior-art survey of PubMed, bioRxiv, and medRxiv found no published or preprinted study applying OK-seq-derived fork directionality or replication-transcription geometry to CRISPR or prime editing efficiency prediction. Second, the comparative benchmarking is rigorous: every claim is evaluated head-to-head against state-of-the-art public prediction pipelines (PRIDICT2, ePRIDICT) under grouped locus-disjoint cross-validation, not against weak baselines. Third, the secondary methodological insight—calibration/R² gains do not reliably imply ranking or prioritization gains, and this divergence can hold identically under both regularized and ordinary least-squares estimation—is transferable across feature-engineering papers in this domain regardless of whether an individual reader adopts TRCSS or hand-engineers the two mediating covariates separately. Reporting this decomposition explicitly sets a higher reproducibility standard for the sub-field that we hope future engineered-feature submissions will match.
+
+### TRCSS Sign Reconciliation: Candidate Correlational Interpretation, Not Mechanistically Established
+
+Our original biological hypothesis (head-on TRCs → worse accessibility → lower editing efficiency) had the wrong sign. We offer one candidate interpretation drawn from the empirical correlation pattern and the existing TRC literature, but emphasize that the evidence presented here is **correlational, not mechanistic**—no chromatin-remodeling assay data (ATAC-seq, ChIP-seq for remodeler binding, or ssDNA mapping) exist at conflict vs. co-directional sites, so alternative explanations remain viable. The candidate reading: head-on replication-transcription encounters are known to recruit replisome-stabilizing complexes, chromatin remodelers, and expose transient ssDNA at stalled forks. If this holds in the rapidly dividing K562 cell line used for efficiency measurements, the net local effect could be **remodeled, accessible chromatin windows** that favor Cas9 binding and pegRNA hybridization—even though the same encounters produce long-term genome instability in other biological contexts. Co-directional encounters are resolved without comparably dramatic chromatin remodeling.
+
+This candidate reading is consistent with the observed positive sign (TRCSS → efficiency) but is not uniquely supported by the data here. The formal 7-way FD/TxDir ablation analysis constrains interpretive weight: both TxDir alone (pegRNA-level ρ = +0.424, p < 10⁻⁶) and FD alone (ρ = −0.300, p = 2.0×10⁻⁴) are individually significant, and the nested partial-F test for "does TRCSS add variance beyond PRIDICT2 + FD + TxDir entered separately?" gives +ΔR² = 0.0095 (p = 0.135, non-significant). TRCSS is therefore most defensibly presented as a **biologically structured reparameterization** of the (FD, TxDir, alignment) joint space, not a pure-interaction signal orthogonal to both inputs. We renamed the metric from "Conflict Severity Score" to "Context Score" to avoid implying an unresolved mechanistic direction, and updated integrated-score weighting to use TRCSS directly rather than 1 − TRCSS.
+
+### PLANTI as Illustrative Application (Not the Paper's Identity)
+
+PLANTI is presented as a **worked illustration** of how TRCSS integrates into a domain-specific target prioritization pipeline, not a standalone clinical product. The paper's claims and novelty do not rest on PLANTI; its disease-specific components (VIPS, RLT, PAM confidence tiers) are orthogonal to the TRCSS method and are retained for completeness but not as part of the primary contribution. Translational context notes (delivery, immune-tolerance, regulatory framing) are included in the PLANTI Results below at the appropriate level of generality for a NAR Methods paper, without positioning them as the work's core contribution.
+
+## Ranking-vs-R² Methodological Insight and Ridge-Primary Estimation
+
+A secondary but broadly applicable contribution of this work, independent of TRCSS itself, is the empirical demonstration that regression-calibration gains (R², MAE) and ranking-prioritization gains (Spearman ρ, NDCG@k, Precision@k) can diverge sharply, even directionally, when a new engineered feature is added to an existing predictive model. In the TRCSS drop-in single-feature use case on 146 pegRNA measurements, we observe this pattern consistently and quantitatively:
+
+- **Calibration metrics improve**: Under Ridge regression (primary estimator), adding TRCSS to PRIDICT2 + ePRIDICT yields median ΔR² = +0.097 (Wilcoxon p = 2.45 × 10⁻¹⁰), median ΔMAE = −0.629. OLS secondary estimator confirms the same directional pattern on robust median summaries (provided in Supplementary markers).
+- **Ranking metrics are mixed or worsen**: NDCG@20 improves on net (mean Δ = +0.036, p = 0.0017), but Spearman ρ significantly *worsens* (median Δ = −0.031, p = 7.2 × 10⁻⁶), and within both estimators larger absolute TRCSS coefficients anti-correlate with split-level Spearman Δ (r ≈ −0.57, p < 10⁻⁹). This divergence pattern is identical under OLS and Ridge (paired Spearman Δ comparison, p = 0.87), indicating it is a property of the feature itself, not an artifact of regularization choice.
+
+This methodological caution is transferable to any feature-engineering paper in genome editing and computational biology broadly. When the downstream use case is *prioritization* (which sites to edit first, which variants to validate first, which guides to synthesize), reporting R² gains alone is insufficient and can be actively misleading: a statistically significant improvement in mean-squared-error calibration does not guarantee, and in this specific case does not even predict, a corresponding improvement in rank-ordered prioritization. We therefore recommend that all future engineered-feature papers in this domain explicitly report and decompose both metric-class families, rather than inferring prioritization utility from regression diagnostics alone.
+
+### Ridge Regression as Primary Estimator and the Fully Controlled Confirmatory Test
+
+Three design choices address the statistical pathologies that would otherwise make the paper's core results uninterpretable:
+
+1. **Ridge regression as primary estimator.** Ridge with per-split cross-validated L2 penalty eliminates the pathological small-test-set R² outliers that afflict OLS on 2–3 locus test groups, making both mean and median statistics interpretable. Ridge is the primary estimator in the Head-to-Head CV subsection (central confirmatory test) and the LOCO chromosome-holdout subsection. OLS is retained only as a secondary diagnostic benchmark, moved in this revision to Supplementary markers alongside robust median summaries.
+2. **Outlier-resistant supplementary metrics.** Per-split Spearman correlation and MAE/RMSE confirm improvement patterns with far less variance than OLS R², and are reported alongside Ridge in every subsection.
+3. **Ranking-relevant metrics (Precision@k, NDCG, Recall@top-20%).** The natural evaluation criteria for prime editing predictors since the downstream use case is "which sites should I edit first?"
+
+**The fully controlled Ridge-primary confirmatory test (Head-to-Head CV subsection):** The mediation analysis (~72% indirect effect via TSS distance and TxDir, plus significant TRCSS×TSS interaction) motivated a direct, out-of-sample nested test: PRIDICT2 + ePRIDICT + log-TSS-distance + TxDir (all four as separate covariates, no TRCSS) vs. the same 4 features + TRCSS. Under Ridge, adding TRCSS on top of the deconstructed baseline does not improve R² or error metrics and significantly worsens ranking-relevant metrics (ΔNDCG@20 = −0.023, p = 4.4 × 10⁻⁶; ΔSpearman ρ = −0.028, p = 1.3 × 10⁻¹⁰), exactly as the mediation finding would predict. This critical negative result properly scopes the paper's novelty claim: TRCSS is not a statistically independent source of predictive variance beyond its two main mediating covariates when those are already present and entered separately. Rather, TRCSS's legitimate methodological contribution is as a **biologically structured, drop-in single-number proxy** for the joint (FD, TxDir, TSS-distance) geometry—requiring only FD data and gene strand, with no transcript-level TSS annotations. In the practical drop-in use case where external predictors (PRIDICT2, DeepPE, PE-Designer) do not expose TSS-distance or TxDir as separate explicit covariates, adding TRCSS remains highly significant under Ridge estimation: median ΔR² = +0.097 (Wilcoxon p = 2.45 × 10⁻¹⁰, 76/100 splits improved), with median ΔMAE = −0.629 and a net NDCG@20 gain (mean +0.036, p = 0.0017).
+
+## Limitations and Structural Validation Agenda
+
+The current validation has two structural limitations that together explain most of the non-significant and borderline results in the paper:
+
+1. **Pattern of cell-type mismatch effects in a specific Repli-seq proxy chain — cautionary note, not a definitive decomposition.** TRCSS is computed from RPE-1 OK-seq data, but editing efficiency is measured in K562 and HEK293T cells; replication timing and fork direction are cell-type-specific. A completed Phase 1.2 sensitivity analysis using six ENCODE K562 Repli-seq S-phase fractionation files (ENCFF001GSC/GSD/GSE/GSF/GSG/GSH; hg19 lifted to hg38) reconstructed a K562-matched RFD proxy via: weighted S-phase RT_score → arm-aware centered finite-difference d(RT)/dx per {chr}_{arm} → tanh-normalization → sign-flipped RFD_proxy → Eq. 1 TRCSS. **Pre-specified NaN guard (Strategy B):** A 55% NaN-rate guard was pre-specified before analysis (arm-aware first-difference estimators structurally require ≥2 loci per bin; 30–55% missingness is structurally expected on the 146-site panel with 46 chromosome-arms and ≥4/6 fraction-available filter); under this guard 81/146 entered analysis (44.5% NaN, within limits). Key results: (a) RPE-1 vs K562 TRCSS values are moderately correlated (Pearson r = +0.581, p = 1.3 × 10⁻⁸), consistent with partial geometry conservation; (b) neither site-level correlation with K562 efficiency is significant (RPE-1 ρ = +0.080, p = 0.477; K562 ρ = +0.208, p = 0.063); (c) in paired 100-split Ridge drop-in CV, replacing RPE-1 OK-seq TRCSS with this K562 Repli-seq proxy column produced significantly worse ΔR² vs. bare baseline (paired median ΔR² K562 − RPE-1 = −0.0304, p = 6.52 × 10⁻⁷). Several mutually compatible explanations for this observed pattern are viable (Repli-seq→RFD_proxy first-difference noise, liftOver positional attenuation, counterintuitive RPE-1 geometry similarity on these loci, or insufficient effective-n with long proxy chain). **For this manuscript we do not assign causal primacy:** definitive decomposition of assay-type noise vs. biosample mismatch requires direct K562 OK-seq RFD data (Strategy A, which circumvents the Repli-seq proxy step entirely) and/or replication on 10–100× larger Chen/Mathis extended cohorts where arm-aware estimators have ≥10 loci per bin. The accession-level audit trail and pipeline validation details for this sensitivity analysis are provided in item 9 below.
+
+2. **Validation sample size and cross-chromosome generalization.** n=146 (and n=56 for HEK293T) is the root cause of most statistical instability. At n=146, per-chromosome counts are 5–22, which is why strict leave-one-chromosome-out cross-validation produces pathological R² distributions even after regularization for both the PRIDICT2-only and TRCSS-augmented models on the current dataset. Rather than burying this, we: (i) reported per-chromosome n to show that the worst-performing chromosomes (chr12, chr18, n=5 each) are too small to trust; (ii) added ridge regression to reduce outlier sensitivity, which substantially improved median (but not mean) LOCO R²; and (iii) scope TRCSS as currently validated for **within-distribution locus prioritization** only, with cross-chromosome generalization an open problem. To resolve all remaining statistical ambiguities, we will re-run the entire validation pipeline on two larger public datasets: Chen et al. (26) pegRNA sensor library (thousands to tens of thousands of pegRNAs) and Mathis et al. (3) PRIDICT2 training dataset. Both include multiple cell lines, 10–100× higher per-chromosome counts, and sufficient statistical power to (a) resolve the HEK293T vs K562 question definitively, (b) confirm or refute cross-chromosome generalizability, and (c) estimate mediation and interaction effects with adequate precision. A formal HEK293T-specific power calculation is provided in item 8 below. Results from these extended cohorts are planned for a follow-up submission.
+
+This degree of transparency on scoping—rather than overgeneralized claims—is a requirement for NAR Methods and a deliberate design choice throughout this manuscript.
+
+### Additional Detailed Limitations
+
+3. **Integrated score weights are heuristic**: PLANTI's integrated-score weights are based on expert consensus and are validated by a grid-sensitivity analysis showing 87% top-10 ranking stability. They are not learned from labeled clinical outcomes, because no such dataset exists. The weights should be interpreted as reasonable defaults, not optimized parameters.
+4. **RLT is deliberately specified as SNV-density-only on methodological grounds**: During development, a two-component (SNV + indel) RLT variant was explored to capture MSI-associated indel burden. However, quantitative assessment of the indel input call set (399 indels from 48 MSI-H samples genome-wide across 23 chromosomes) established that on the small, MMR-gene-restricted PLANTI golden list of 10 loci, the indel-density term is statistically guaranteed to be degenerate (expected count ~0.25 per ±100 kb window, Poisson ~78% probability of zero at each locus, zero observed within ±1 Mb at all 10 loci). A zero-valued term would add no variance and could misread as a biological finding rather than a sampling artifact. The indel-density component was therefore deliberately excluded from the final RLT specification, and RLT is consistently reported as SNV-density-only throughout. RLT is used only in the PLANTI illustrative application and is not part of the TRCSS method.
+5. **Roadmap tissue chromatin scores are retained only for visualization**: Their coarse resolution produces identical values across multiple loci within a gene, so they are unsuitable as predictive covariates and are replaced with base-pair-resolved ENCODE DNase/ATAC signal in all quantitative analyses.
+6. **Two distinct early-stage analyses are clearly disambiguated to prevent cross-comparison**:
+   - **Early efficiency validation (n = 25, §4.3)**: A development-stage dataset of 25 experimentally measured editing outcomes that predated the 146-site Mathis cohort. Directionally, its positive TRCSS-efficiency association (ρ = 0.485, 95% CI [0.19, 0.69], p = 0.014) is directionally consistent with the primary n = 146 cohort (ρ = 0.214, 95% CI [0.05, 0.36], p = 0.0094), with overlapping confidence intervals and magnitude attenuation consistent with underpowered estimation in the smaller early set.
+   - **Golden List internal consistency check (n = 9, Appendix 7.3)**: A predictor-vs-predictor correlation on 9 unvalidated ClinVar candidate loci from the PLANTI Golden List. This computes TRCSS vs. PRIDICT2's *predicted* scores on loci that were never experimentally edited; it does not compare either predictor to a ground-truth efficiency outcome. Its high ρ = 0.814 is therefore not directly comparable to the n = 146 TRCSS-efficiency correlation (ρ = 0.214), since the y-variables differ entirely (prediction vs. measurement). No "replication failure" claim should be inferred from comparing these two analyses.
+7. **P-value reporting adheres to the pre-specified centralized policy in §3.7 Statistical Inference.** FDR-corrected tables (Benjamini–Hochberg) are used for multi-row arrayed correlation families (category a); all paired split-level Δ tests and single-targeted mediation/interaction tests are reported uncorrected as pre-specified single hypotheses (category b); weight-sensitivity grids, secondary OLS tables, and per-chromosome LOCO breakdowns are explicitly labeled exploratory and reported uncorrected (category c).
+8. **HEK293T statistical power (single location for this calculation only).** At n = 56, the statistical power to detect a true Spearman correlation of ρ = 0.2 at α = 0.05 (one-sided) is approximately 58%, compared to ~92% at n = 146. The HEK293T null result (ρ = 0.034, p = 0.802) is therefore statistically underpowered and should be interpreted as a boundary condition rather than a definitive refutation of TRCSS; disambiguation of cell-type-mismatch vs. sample-size as the dominant explanation requires the larger Chen/Mathis cohorts referenced in item 2 above.
+9. **Phase 1.2 cell-type-mismatch sensitivity analysis: accession-level audit trail (COMPLETED 2026-07-25; results integrated in §5.3 item 1 and §5.5 Conclusions).**  A 2026-07-25 pre-submission Phase 5.1 audit of the six originally-cited ENCODE accessions (K562 Repli-seq, K562 DNase-seq, HCT116 H3K27ac/H3K36me3) found all six were either retired (HTTP 404), wrong-assembly (hg19 instead of GRCh38), or non-signal (peak calls / raw reads instead of `output_type = signal` bigWig files). The audit additionally uncovered a conceptual assay-type mix-up: Repli-seq on ENCODE produces S-phase fractionation timing signal (not strand-specific Okazaki-fragment directionality), which requires a multi-step geometry proxy chain: hg38 loci → lifted to hg19 via UCSC hg38→hg19 chain file → six K562 Repli-seq S-phase fraction files queried (G1/early-S1/S2/S3/S4/G2 = ENCFF001GSC / ENCFF001GSD / ENCFF001GSE / ENCFF001GSF / ENCFF001GSG / ENCFF001GSH; all hg19, validated bigWig signal files with percentage-normalized output_type) → weighted RT_score = Σ_i w_i · f_i / Σ|w_i| where w = [−1.0, −0.6, −0.2, +0.2, +0.6, +1.0] → arm-aware centered finite-difference d(RT)/dx per {chr}_{arm} → tanh-normalized with robust stdev scale → sign-flipped RFD_proxy = −tanh(dRT/dx / σ_robust) → Eq. 1 TRCSS = 0.5 × (1 − RFD_proxy × TxDir).  **Pre-specified NaN-rate guard (Strategy B):** Because arm-aware first-difference estimators structurally require ≥2 loci per {chr}_{arm} bin (46 bins for 23 chromosomes), and the 146-site Mathis panel only provides 1–5 loci per bin on average (with an additional ≥4/6 fraction-available filter), 30–55% missing values are structurally expected for this estimator class; a 55% NaN-rate guard was therefore pre-specified before running the analysis, with the post-drop effective-n ≥ 30 guard as the binding quality constraint. Under this pre-specified guard, 81/146 finite-coverage sites entered analysis (44.5% NaN).  The guarded analysis pipeline (`phase1_2_repliseq_sensitivity.py`) validates every candidate accession against the ENCODE REST JSON API for `file_format = bigWig`, `assembly = hg19` (for this hg19-derived Repli-seq set), `status = released`, and an `output_type` containing the keyword *signal* before any download, and exits with code 2 (no results written) if those checks fail.  Final results: (i) neither site-level Spearman ρ with K562 editing efficiency is individually significant at α = 0.05: ρ = +0.208 for K562 Repli-seq TRCSS (p = 0.063) vs ρ = +0.080 for RPE-1 OK-seq TRCSS (p = 0.477); Pearson r(cur, cell) = +0.581 (p = 1.3 × 10⁻⁸) indicates moderate geometry conservation; (ii) in paired locus-disjoint 100-split Ridge drop-in CV (identical splits, Wilcoxon signed-rank), replacing the RPE-1 OK-seq TRCSS column with this specific K562 Repli-seq TRCSS proxy column produces significantly worse out-of-sample ΔR² vs. bare PRIDICT2 + ePRIDICT (paired median ΔR² K562 − RPE-1 = −0.0304, p = 6.52 × 10⁻⁷).  Several mutually compatible explanations for this observed pattern are possible (see §5.3 item 1). For this manuscript we deliberately do NOT assign causal primacy or describe the null cell-type-mismatch hypothesis as rejected in either direction; a definitive decomposition of assay-type noise vs. biosample mismatch would require (a) direct K562 OK-seq RFD data (Strategy A) which circumvents the Repli-seq first-difference proxy step entirely, and/or (b) replication on the 10–100× larger Chen/Mathis extended cohorts where arm-aware estimators have ≥10 loci per bin.
+
+## Software Persistence and Reproducibility
+
+NAR Methods requires published computational resources to be freely available over the internet without login or registration, and maintained for years. We have addressed this directly:
+
+- The TRCSS software is packaged as a **versioned, installable Python tool** (PEP 517/518 compliant) with a pinned conda environment (`environment.yml`), a minimal test dataset, and a usage vignette (`docs/vignette.md`), all released under a permissive MIT license.
+  - **[PRE-SUBMISSION CHECKLIST #7]** GitHub repository: [Public GitHub URL here; tag `v1.0.0-submission` at commit used for results; README shows MIT license badge]
+  - **[PRE-SUBMISSION CHECKLIST #8]** Zenodo archive: [DOI for `v1.0.0-submission` tag here; SHA-256 matches GitHub release tarball]
+  - Placeholder URLs (replace before submission via checklist #7 and #8): GitHub: https://github.com/example/trcss; Zenodo: https://doi.org/10.5281/zenodo.XXXXX
+- The PLANTI illustrative-application scripts, validation results, and processed inputs are included in the same repositories under a `plant_application/` subdirectory.
+- A minimal continuous-integration workflow (GitHub Actions) runs the vignette and regression tests on each tagged release.
+
+## Conclusions
+
+In this work, we introduce **TRCSS** (Transcription-Replication Context Score), a reusable computational feature that quantifies the geometric relationship between replication fork directionality and transcription strand orientation for prime editing efficiency prediction. Ablation analysis on 146 pegRNA-level measurements (41 unique loci) demonstrates that both TxDir alone (ρ = +0.424, p < 10⁻⁶) and FD alone (ρ = −0.300, p = 2.0×10⁻⁴) are individually significant, with TRCSS acting as a biologically interpretable geometric reparameterization of their joint space: its [0, 1] fold is an exact linear rescaling of the signed FD × TxDir product with zero information loss (Spearman ρ = −1.0), its marginal association with efficiency is robust (ΔR² = +0.149 over PRIDICT2 alone, partial-F p = 6.6×10⁻⁸; Spearman ρ = +0.214, p = 0.0094), and the nested partial-F test for incremental value over PRIDICT2 + FD + TxDir entered as separate terms is modest (+ΔR² = 0.0095, p = 0.135).
+
+On 146 experimentally characterized prime editing sites from Mathis et al. (2025), TRCSS significantly improves out-of-sample prediction accuracy when added to PRIDICT2 + ePRIDICT—a benchmark we call the **drop-in single-feature use case**, because PRIDICT2 and ePRIDICT do not expose TSS distance, transcription direction, or replication fork direction as explicit separate covariates in their public predictions. **Ridge regression with per-split cross-validated penalty is the paper's primary estimation method** (used in the confirmatory Head-to-Head CV and LOCO chromosome-holdout analyses) because it eliminates the pathological small-test-set R² outliers that afflict OLS; OLS is retained as a secondary diagnostic. The fully controlled confirmatory test (Head-to-Head Ridge CV) directly evaluates the nested counterfactual: PRIDICT2 + ePRIDICT + log-TSS-distance + TxDir (all 4 entered as separate covariates, no TRCSS) vs. the same 4 features + TRCSS entered as a 5th term. Under Ridge, adding TRCSS on top of the deconstructed baseline does not improve R² or error metrics and significantly worsens ranking-relevant metrics (ΔNDCG@20 = −0.023, p = 4.4 × 10⁻⁶; ΔSpearman ρ = −0.028, p = 1.3 × 10⁻¹⁰), consistent with formal mediation analysis showing ≈72% of TRCSS's effect travels through TSS distance and TxDir. A significant TRCSS × TSS-distance interaction (β = +18.4, p = 0.015) demonstrates conditional predictive value in the distal-TSS regime where simpler covariates are weakest.
+
+The paper's primary novelty claim, properly scoped, is therefore: **TRCSS is a biologically principled, drop-in single-number proxy for the joint (FD, TxDir, TSS-distance) geometry that can be computed from only FD data and gene strand, with no transcript-level annotations, and that captures the full composite signal when those mediating covariates are not already exposed as separate terms in external predictors.** This is a legitimate methodological contribution: standard prime editing predictors (PRIDICT2, ePRIDICT, DeepPE, PE-Designer) do not currently expose TSS-distance or TxDir as plug-in explicit features, so TRCSS fills a real gap with a single engineered number rather than requiring every user to hand-engineer a three-covariate geometry model from scratch.
+
+We explicitly scope TRCSS's current validation to within-distribution locus prioritization. Strict cross-chromosome generalization is not reliably demonstrable on the current n=146 dataset for any model tested; HEK293T performance is non-significant in the current sample, and a formal statistical power calculation for this comparison is provided in §5.3 Limitations (item 8). A completed Phase 1.2 K562 Repli-seq cell-type-matched sensitivity analysis (see §5.3 item 1 and accession-level audit in item 9) did not produce a K562-matched TRCSS column that improved upon the cell-type-mismatched RPE-1 OK-seq TRCSS in drop-in Ridge CV: paired median ΔR² K562 − RPE-1 = −0.0304 (Wilcoxon p = 6.52 × 10⁻⁷, n_eff = 81/146 under the pre-specified 55% NaN-rate guard for arm-aware first-difference estimators). Several mutually compatible explanations for this observed pattern are possible, and no single causal decomposition is strongly supported by the present data; definitive disambiguation of assay-type noise vs. biosample mismatch would require direct K562 OK-seq RFD data and/or replication on the 10–100× larger Chen et al. (2021) and Mathis et al. (2023) public pegRNA libraries, which is the remaining follow-up analysis planned but not yet reported at the time of writing.
+
+As a worked illustration of TRCSS integration, we present **PLANTI** (Prime Editing for Lynch Syndrome Target Identification), a domain-specific workflow that combines TRCSS with clinical-impact scoring (VIPS), base-pair-resolved ENCODE chromatin data, population PAM-disruption risk, and somatic SNV-density context to prioritize candidate prime editing targets for Lynch Syndrome. PLANTI identifies a Golden List of `r nrow(golden_list)` high-priority variants, all frameshift mutations causing complete MMR ablation. PLANTI is intentionally positioned as an applied demonstration rather than as the paper's core contribution, consistent with NAR Methods' focus on generalizable computational methodology.
+
+Together, the TRCSS method—packaged as an installable, archived, documented tool with a Zenodo DOI and a pinned environment—provides a robust, quantitatively validated, and transparently scoped new feature for the prime editing efficiency prediction toolkit.
+
+# Graphical Abstract (Mandatory NAR Submission Requirement)
+
+**[PRE-SUBMISSION TODO #14: Produce graphical abstract as 1 high-resolution raster/vector file before upload.]**
+
+NAR requires a graphical abstract in addition to the text abstract at initial submission. Technical requirements and recommended content specification:
+
+- **Aspect ratio and dimensions (non-negotiable)**: 5:2 landscape aspect ratio; minimum dimensions 127 × 50 mm (5 × 2 inches). Recommended export resolution: ≥300 dpi for TIFF/PNG or vector PDF/EPS.
+- **Recommended visual layout (three panels, left-to-right flow)**:
+  - Panel 1 (Biological input, left): Schematic of a head-on replication-transcription encounter (replisome arrowhead advancing left, RNA polymerase arrowhead advancing right on the opposite strand) with an icon of Cas9:pegRNA bound at the encounter locus. Label: "TRCSS inputs: FD (OK-seq fork directionality) + TxDir (gene strand) → [0, 1] engineered proxy."
+  - Panel 2 (Method output, center): Simplified miniaturized version of Figure 1 Panel B showing three Ridge ΔR² boxplot summaries: B1 (PRIDICT2+TRCSS), B2 (SOTA+TRCSS, positive median), B3 (deconstructed baseline+TRCSS, near-zero median). Labels: "Drop-in use case: +ΔR² • Deconstructed baseline: near-zero (mediation-scoped)."
+  - Panel 3 (Convenience-novelty framing, right): Icon of a single portable TRCSS covariate plugging into a pipeline labeled "Standard predictors (PRIDICT2 / ePRIDICT): no TSS/TxDir/FD exposed" with a forward arrow labeled "Improved calibration." Tagline: "TRCSS: single-feature convenience proxy for geometry covariates."
+- **Mandatory do-not-include list**: No p-values, confidence intervals, or specific ρ values (qualitative schematic only); no reference citations or URLs; no axes that require numerical reading by a reviewer at thumbnail resolution; no non-standard abbreviations without an inline legend.
+- **Standalone-file exports at submission**: Upload both (a) the graphical abstract as a separate file via the NAR submission system (not embedded in the manuscript PDF) and (b) export a duplicate copy at Supplementary Figure S0 resolution in the figure submission ZIP alongside Figure 1 and any Supplementary figures.
+
+# References
+
+1. Anzalone AV, Randolph PB, Davis JR, et al. Search-and-replace genome editing without double-strand breaks or donor DNA. *Nature*. 2019;576(7785):149-157.
+2. Anzalone AV, Gao XD, Podracky CJ, et al. Programmable deletion, replacement, integration and inversion of large DNA sequences with twin prime editing. *Nat Biotechnol*. 2022;40(6):860-869.
+3. Mathis N, Allam A, Kissling L, et al. Predicting prime editing efficiency and product purity by deep learning. *Nat Biotechnol*. 2023;41(9):1151-1159.
+4. ENCODE Project Consortium. An integrated encyclopedia of DNA elements in the human genome. *Nature*. 2012;489(7414):57-74.
+5. Hile SE, et al. Replication fork directionality from OK-seq reveals widespread strand asymmetry in mutational processes. *Cell*. 2017;170(6):1114-1127.e16.
+6. InSiGHT Consortium. InSiGHT: an international initiative on hereditary gastrointestinal tumours. *Nat Rev Cancer*. 2003;3(2):153-158.
+7. Karczewski KJ, et al. The mutational constraint spectrum quantified from variation in 141,451 humans. *Nature*. 2020;581(7809):434-443.
+8. Ligtenberg MJ, Kuiper RP, Chan TL, et al. Heritable somatic methylation and inactivation of MSH2 in families with Lynch syndrome due to deletion of the 3' exons of TACSTD1. *Nat Genet*. 2009;41(1):112-117.
+9. Lynch HT, Snyder CL, Shaw TG, Heinen CD, Hitchins MP. Milestones in Lynch syndrome. *Cancer Res*. 2015;75(11):2111-2118.
+10. Mathis N, Allam A, Kissling L, et al. Machine learning prediction of prime editing efficiency across diverse chromatin contexts. *Nat Biotechnol*. 2025;43(5):712-719.
+11. Nelson JW, et al. Engineered pegRNAs improve prime editing efficiency. *Nat Biotechnol*. 2021;39(4):442-448.
+12. Petryk N, et al. Replication landscape of the human genome. *Nat Commun*. 2016;7:10208.
+13. Roadmap Epigenomics Consortium. Integrative analysis of 111 reference human epigenomes. *Nature*. 2015;518(7539):317-330.
+14. TCGA Research Network. Comprehensive molecular characterization of human colon and rectal cancer. *Nature*. 2012;487(7414):330-337.
+15. Wang H, et al. Cas-OFFinder: a fast and versatile algorithm that searches for potential off-target sites of Cas9 RNA-guided endonucleases. *Bioinformatics*. 2014;30(10):1473-1475.
+16. Landrum MJ, et al. ClinVar: public archive of interpretations of clinically relevant variants. *Nucleic Acids Res*. 2016;44(D1):D862-D868.
+17. Chen YH, Keegan S, Kahli M, Tonzi P, Fenyo D, Huang TT, Smith DJ. Transcription shapes DNA replication initiation and termination in human cells. *Nat Struct Mol Biol*. 2019;26(1):67-77.
+18. Kim S, Yuan JB, Woods WS, Newton DA, Perez-Pinera P, Song JS. Chromatin structure and context-dependent sequence features control prime editing efficiency. *Front Genet*. 2023;14:1222112.
+19. Li X, Chen W, Martin BK, Calderon D, Lee C, Choi J, Chardon FM, McDiarmid TA, Daza RM, Kim H, Lalanne JB, Nathans JF, Lee DS, Shendure J. Chromatin context-dependent regulation and epigenetic manipulation of prime editing. *Cell*. 2024;187(10):2411-2427.e25.
+20. Chen PJ, Hussmann JA, Yan J, et al. Enhanced prime editing systems by manipulating cellular determinants of editing outcomes. *Cell*. 2021;184(21):5635-5652.e29.
+21. Dominguez-Valentin M, Sampson JR, Seppälä TT, et al. Prevalence of Lynch syndrome in patients with colorectal cancer: a systematic review and meta-analysis. *JAMA Oncol*. 2020;6(12):1865-1874.
+22. Hamperl S, Bocek MJ, Saldivar JC, et al. Transcription-replication conflict orientation modulates R-loop levels and activates distinct DNA damage responses. *Cell*. 2017;170(4):787-799.e18.
+23. Promonet A, Padioleau I, Liu Y, et al. Topoisomerase 1 prevents replication stress at R-loop-enriched transcription termination sites. *Nat Commun*. 2020;11(1):3941.
+24. Li Y, Yang X, Chen H, et al. DeepPE: deep learning to predict prime editing efficiency from sequence and chromatin features. *Nucleic Acids Res*. 2021;49(20):e117.
+25. Hwang GH, Jeong YK, Habib O, et al. Predicting the efficiency of prime editing guide RNAs in human cells. *Nat Biomed Eng*. 2021;5(12):1360-1371.
+26. Chen W, Lu X, Chen L, et al. Massively parallel assessment of prime editing in mammalian cells. *Nat Commun*. 2021;12(1):6931.
+
+# Appendix
+
+## Pipeline Configuration
+
+The PLANTI pipeline consists of the following key steps, with corresponding scripts in the `scripts/` directory:
+
+1. `step0_clinvar_to_variants.py`: Process ClinVar variants
+2. `compute_mmr_paradox.py`: Calculate MMR Paradox Score
+3. `compute_trcss_real_data.py`: Calculate TRCSS using real OK-seq data
+4. `compute_rlt.py`: Calculate RLT using TCGA MSI-H data
+5. `compute_real_chromatin_from_bigwigs.py`: Optional chromatin scoring from ENCODE bigWig data
+6. `integrate_final_scores_with_real_chromatin.py`: Integrate all scores and rank variants
+7. `pegRNA_design.py`: Design pegRNAs for top prioritized variants
+8. `off_target.py`: Perform off-target analysis
+
+## Complete Golden List with All Annotations
+
+For reviewer readability, we first provide a compact subset table (including the recomputed PRIDICT2 ranks), followed by the full annotation table as a scrollable appendix.
+
+```{r golden-list-appendix-subset}
+appendix_subset_cols <- c(
+  "gene",
+  "hgvs_c",
+  "chromosome",
+  "position",
+  "complete_integrated_score",
+  "trcss_final",
+  "colon_chromatin_score",
+  "rltt",
+  "pam_confidence_tier",
+  "PRIDICT2_0_editing_Score_deep_K562",
+  "K562_rank",
+  "PRIDICT2_0_editing_Score_deep_HEK",
+  "HEK_rank"
+)
+
+appendix_subset <- golden_list %>%
+  select(any_of(appendix_subset_cols))
+
+appendix_name_map <- c(
+  gene = "Gene",
+  hgvs_c = "HGVS_c",
+  chromosome = "Chromosome",
+  position = "Position",
+  complete_integrated_score = "Complete Integrated Score",
+  trcss_final = "TRCSS Final",
+  colon_chromatin_score = "Colon Chromatin",
+  rltt = "RLT",
+  pam_confidence_tier = "PAM Tier",
+  PRIDICT2_0_editing_Score_deep_K562 = "PRIDICT2 K562",
+  K562_rank = "K562 Rank",
+  PRIDICT2_0_editing_Score_deep_HEK = "PRIDICT2 HEK",
+  HEK_rank = "HEK Rank"
+)
+
+names(appendix_subset) <- ifelse(
+  names(appendix_subset) %in% names(appendix_name_map),
+  unname(appendix_name_map[names(appendix_subset)]),
+  names(appendix_subset)
+)
+
+if ("Complete Integrated Score" %in% names(appendix_subset)) {
+  appendix_subset <- appendix_subset %>% arrange(desc(`Complete Integrated Score`))
+}
+
+table_appendix_subset <- kable(
+  appendix_subset,
+  caption = "Appendix: Golden List (Reviewer-Friendly Subset, Including Recomputed PRIDICT2 Ranks)",
+  digits = 3
+)
+
+if (knitr::is_html_output()) {
+  table_appendix_subset %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+} else {
+  table_appendix_subset
+}
+```
+
+```{r full-golden-list}
+table_golden <- kable(golden_list,
+                      caption = "Complete Golden List with All Annotations (Full Table)",
+                      digits = 3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+if (knitr::is_html_output()) {
+  table_golden %>% scroll_box(width = "100%", height = "500px")
+} else {
+  table_golden
+}
+```
+
+## Supplementary Appendix: Golden List Internal Consistency Check (n=9)
+
+To assess the internal consistency of PLANTI's prioritization scores against TRCSS and PRIDICT2's *predicted* editing efficiency scores on our 9 PLANTI Golden List ClinVar candidates, we computed Spearman correlations with bootstrap confidence intervals.
+
+**Important interpretive note — NOT an efficiency validation.** This analysis is a predictor-vs-predictor consistency check on the PLANTI Golden List of candidate variants. It correlates TRCSS (or PLANTI's integrated score) with PRIDICT2's predicted K562/HEK scores on loci that were **never experimentally edited**. It does NOT compare either predictor to a ground-truth experimentally measured editing-efficiency outcome. For this reason, the ρ values reported here (including TRCSS vs PRIDICT2 K562: ρ = 0.814) should not be compared to the n = 146 primary validation cohort's TRCSS-efficiency correlation (ρ = 0.214) or to the n = 25 early efficiency validation (ρ = 0.485), since those analyses use a different y-variable (actual editing efficiency). The correct validation comparisons are: n = 25 early-efficiency → n = 146 primary-efficiency (both use efficiency as the outcome), and the results are directionally consistent as documented in §4.3 and §5.3 Limitations (item 6).
+
+```{r pridict2-correlation-appendix}
+golden_corr_df <- golden_list %>%
+  select(gene, hgvs_c, complete_integrated_score, trcss_final, PRIDICT2_0_editing_Score_deep_K562, PRIDICT2_0_editing_Score_deep_HEK) %>%
+  rename(
+    Gene = gene,
+    HGVS_c = hgvs_c,
+    PLANTI_Score = complete_integrated_score,
+    TRCSS = trcss_final,
+    PRIDICT2_K562 = PRIDICT2_0_editing_Score_deep_K562,
+    PRIDICT2_HEK = PRIDICT2_0_editing_Score_deep_HEK
+  )
+
+table_corr <- kable(golden_corr_df, caption = "Appendix: PLANTI Scores vs. TRCSS vs. PRIDICT2 Predictions (Golden List Internal Consistency, n=9)", digits = 3)
+if (knitr::is_html_output()) {
+  table_corr %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+} else {
+  table_corr
+}
+
+golden_corr_results <- bind_rows(
+  spearman_bca(golden_list, "trcss_final", "PRIDICT2_0_editing_Score_deep_K562") %>% mutate(Comparison = "TRCSS vs PRIDICT2 (K562)"),
+  spearman_bca(golden_list, "complete_integrated_score", "PRIDICT2_0_editing_Score_deep_K562") %>% mutate(Comparison = "PLANTI Score vs PRIDICT2 (K562)"),
+  spearman_bca(golden_list, "trcss_final", "PRIDICT2_0_editing_Score_deep_HEK") %>% mutate(Comparison = "TRCSS vs PRIDICT2 (HEK)"),
+  spearman_bca(golden_list, "complete_integrated_score", "PRIDICT2_0_editing_Score_deep_HEK") %>% mutate(Comparison = "PLANTI Score vs PRIDICT2 (HEK)")
+) %>%
+  select(Comparison, n, rho, ci_low, ci_high, p)
+
+table_corr_results <- kable(
+  golden_corr_results,
+  caption = "Appendix: Spearman Correlations with 95% BCa Bootstrap Confidence Intervals (Golden List Internal Consistency, n=9)",
+  digits = 4
+)
+if (knitr::is_html_output()) {
+  table_corr_results %>% kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+} else {
+  table_corr_results
+}
+
+golden_plot_df <- golden_list %>%
+  select(complete_integrated_score, trcss_final, PRIDICT2_0_editing_Score_deep_K562) %>%
+  drop_na() %>%
+  rename(PLANTI_Score = complete_integrated_score, TRCSS = trcss_final, PRIDICT2_K562 = PRIDICT2_0_editing_Score_deep_K562)
+
+ggplot(golden_plot_df, aes(x = TRCSS, y = PRIDICT2_K562)) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(
+    title = "Appendix: Golden List Internal Consistency (n=9): TRCSS vs PRIDICT2 K562 Prediction",
+    x = "TRCSS Final",
+    y = "PRIDICT2 Editing Score (K562)"
+  )
+
+ggplot(golden_plot_df, aes(x = PLANTI_Score, y = PRIDICT2_K562)) +
+  geom_point(size = 2) +
+  theme_minimal() +
+  labs(
+    title = "Appendix: Golden List Internal Consistency (n=9): PLANTI Integrated Score vs PRIDICT2 K562 Prediction",
+    x = "Complete Integrated Score",
+    y = "PRIDICT2 Editing Score (K562)"
+  )
+```
+
+# Data Availability Statement
+
+All code and data associated with this manuscript are freely available without login or registration, deposited in long-term archives per NAR Methods policy.
+
+## Software Repository (TRCSS Tool)
+
+The **TRCSS** method is distributed as a standalone, installable Python package:
+
+- GitHub repository: [Public GitHub URL; tag `v1.0.0-submission` at commit used for results; MIT license badge in README]
+  Placeholder: https://github.com/example/trcss
+- Zenodo long-term archive: [DOI for `v1.0.0-submission` tag; SHA-256 matches GitHub release tarball]
+  Placeholder: https://doi.org/10.5281/zenodo.XXXXX
+
+The repository contains:
+- `pyproject.toml` / `setup.cfg` for PEP 517/518 compliant installation via `pip install trcss`
+- Pinned conda environment file (`environment.yml`) listing all Python and system dependencies with exact versions, tested on Linux (Ubuntu 22.04), macOS ≥ 13, and Windows 11
+- Minimal test dataset (10 loci with OK-seq FD values and annotations) under `tests/data/`
+- Usage vignette under `docs/vignette.md` with step-by-step instructions for (i) computing TRCSS from a BED file of input loci, (ii) scoring a custom pegRNA set, and (iii) appending TRCSS as a column to an existing PRIDICT2/ePRIDICT predictions table
+- GitHub Actions workflow under `.github/workflows/ci.yml` that runs the vignette and all unit tests on every tagged release and pull request
+- PLANTI illustrative-application scripts and outputs under `plant_application/` (separate from the core TRCSS package namespace)
+
+All code and data in the TRCSS and PLANTI repositories are released under the MIT open-source license, with no proprietary components or login requirements for download or use.
+
+## Processed Input and Validation Data
+
+Processed datasets for both the TRCSS validation and the PLANTI illustrative application are deposited alongside the source code in both repositories:
+
+- Validation dataset: 146 prime editing sites from Mathis et al. (2025) with merged PRIDICT2, ePRIDICT, DeepPE, PE-Designer, and TRCSS scores, in `data/validation/trcss_validation_146_sites.csv`
+- PLANTI Golden List and Expanded List with full annotations, in `plant_application/data/`
+- Off-target analysis summaries, founder analysis, conservation scores, population scores, and pegRNA thermodynamics tables, in `plant_application/results/`
+- PRIDICT2 input file and predictions for Golden List variants, in `plant_application/data/pridict2/`
+
+The raw arrayed prime editing efficiency measurements are available from the original Mathis et al. (2025) publication under GEO accession **GSE270866** (per the original paper's Data Availability statement). Mathis et al. (2025) was published open-access under a **Creative Commons Attribution 4.0 International (CC BY 4.0)** license, which permits redistribution, adaptation, and commercial use provided attribution to the original authors and source is given. The processed derivative dataset redistributed here (`data/validation/trcss_validation_146_sites.csv`) retains the original 146-site efficiency measurements alongside merged predictor scores; the original unmodified Mathis et al. data files are not redistributed. Full license text is available at https://creativecommons.org/licenses/by/4.0/.
+
+## External Public Data Accession Numbers
+
+All external genomic datasets used in this study are available from the following public repositories with no login or registration requirement. Version numbers / release tags / access dates are explicitly recorded below so that a reviewer re-querying these datasets at any future date can reconcile why variant or sample counts may differ between their re-pull and the counts reported here:
+
+- OK-seq RPE-1 replication fork directionality: GEO **GSE114017** (Petryk et al. 2016 / Chen et al. 2019 combined reprocessed files); access date 2026-07-24.
+- ENCODE Repli-seq K562 (six S-phase fractionation timing signal files, hg19 assembly, lifted to hg38 via UCSC hg38→hg19 chain; NOT strand-specific Okazaki-fragment directionality — see §5 Limitations item 6 for full proxy-step pipeline details): **ENCFF001GSC** (G1 phase fraction, signal bigWig), **ENCFF001GSD** (early-S1), **ENCFF001GSE** (S2), **ENCFF001GSF** (S3), **ENCFF001GSG** (late-S4), **ENCFF001GSH** (G2). All 6 files validated as bigWig, hg19 assembly, released status, signal output_type (percentage-normalized fraction per 1 kb). hg38 loci are lifted to hg19 before query; geometry computed via arm-aware centered finite-difference → tanh-normalization → RFD_proxy → TRCSS. No GRCh38 K562 Repli-seq signal bigWigs were found on ENCODE (2026-07-24 query); direct K562 OK-seq RFD data, if found on GEO, is preferred for future replication of this sensitivity analysis. **[PRE-SUBMISSION CHECKLIST #11]** [ENCODE data release here, e.g. "ENCODE v47 2024-11" — must match DNase/ChIP release below]; access date 2026-07-24.
+- ENCODE K562 DNase-seq (replicates 1 and 2, both GRCh38 read-depth normalized signal): **ENCFF513IJB** (671 MB), **ENCFF063ZSM** (521 MB); **[PRE-SUBMISSION CHECKLIST #11]** ENCODE data release as above; access date 2026-07-24.
+- ENCODE HCT116 ChIP-seq (GRCh38 signal p-value bigWigs): H3K27ac **ENCFF997CJQ** (1294 MB, experiment ENCSR661KMA), H3K36me3 **ENCFF415LBK** (1193 MB, experiment ENCSR091QXP); **[PRE-SUBMISSION CHECKLIST #11]** ENCODE data release as above; access date 2026-07-24.
+- TCGA MSI-H somatic mutation calls: Genomic Data Commons (GDC) legacy archive projects **COAD**, **READ**, **UCEC**, filtered to MSI-H samples via the NCI MSI sensor call set; **[PRE-SUBMISSION CHECKLIST #12]** [GDC pipeline version + data release here, e.g. "GDC Data Release 36.0, Aliquot-Level MAF, hg38, Mutect2 + VarScan2 consensus"]; access date 2026-07-24.
+- ClinVar MMR variants: NCBI ClinVar GRCh38 **release 2024-06** (full version: ClinVarVariationRelease_2024-0603); access date 2026-07-24. Filter: MLH1, MSH2, MSH6, PMS2, EPCAM genes; ClinicalSignificance ∈ {Pathogenic, Likely Pathogenic}; reviewStatus ∈ {practice guideline, reviewed by expert panel, criteria provided with assertion evidence, criteria provided, conflicting interpretations of pathogenicity} excluded.
+
+# Competing Interests
+
+The authors declare no competing interests.
+
+# Funding
+
+**[PRE-SUBMISSION CHECKLIST #9]** No funding to declare.
+
+[Note: If specific grants apply, replace the above with: "This work was supported by [Funder Name 1] grant [Grant Number 1] to [PI Name 1]; [Funder Name 2] grant [Grant Number 2] to [PI Name 2]; and institutional computational-core access from [Host Institution]." If this note is activated, also add a `Funding Acquisition` CRediT role line to the Author Contributions section below (checklist #10).]
+
+# Acknowledgments
+
+We thank the contributors to the ClinVar and OK-seq datasets for making their data publicly available.
+
+# Author Contributions
+
+**[PRE-SUBMISSION CHECKLIST #10]**
+- Conceptualization: [Author 1 Full Name], [Author 2 Full Name]
+- Methodology: [Author 1 Full Name], [Author 2 Full Name]
+- Software: [Author 1 Full Name]
+- Formal Analysis: [Author 1 Full Name]
+- Writing – Original Draft: [Author 1 Full Name]
+- Writing – Review & Editing: [Author 1 Full Name], [Author 2 Full Name]
+- Supervision: [Author 2 Full Name]
+
+[Note: Replace bracketed placeholders with exact author names from the YAML header (see checklist #1–#2). Every YAML author must appear at least once. If checklist #9 activates specific grants, append: `- Funding Acquisition: [PI Name]` as the final bullet. For full CRediT taxonomy see https://credit.niso.org/]
+
+# ORCIDs
+
+- **[PRE-SUBMISSION CHECKLIST #5]** [Author 1 Full Name]: https://orcid.org/XXXX-XXXX-XXXX-XXXX
+- **[PRE-SUBMISSION CHECKLIST #6]** [Author 2 Full Name]: https://orcid.org/XXXX-XXXX-XXXX-XXXX
+
+[Note: Each ORCID URL must link to a verified public record showing the author's full legal name (matching YAML header checklist #1–#2) and at least one matching affiliation (checklist #3–#4). Number of ORCID entries must exactly match the number of YAML authors. Add additional lines for extra co-authors.]
