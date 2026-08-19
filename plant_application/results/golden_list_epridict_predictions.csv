@@ -1,0 +1,11 @@
+gene,hgvs_c,chromosome,position,ref,alt,Unnamed: 0,prediction,rank,percentile
+MSH2,NM_000251.3(MSH2):c.2545del (p.Leu849fs),chr2,47480780,,,,,,
+MSH2,NM_000251.3(MSH2):c.1520del (p.Pro507fs),chr2,47466665,,,,,,
+MSH2,NM_000251.3(MSH2):c.2018del (p.Gly673fs),chr2,47476377,,,,,,
+MSH6,NM_000179.3(MSH6):c.2328del (p.Gln776fs),chr2,47800310,,,,,,
+MSH6,NM_000179.3(MSH6):c.2327_2336del (p.Gln776fs),chr2,47800310,,,,,,
+MSH2,NM_000251.3(MSH2):c.738del (p.Gly247fs),chr2,47412504,,,,,,
+MSH6,NM_000179.3(MSH6):c.3622_3623insGAGAG (p.Ser1208Ter),chr2,47805683,,,,,,
+MSH6,NM_000179.3(MSH6):c.2933del (p.Gln978fs),chr2,47800916,,,,,,
+MLH1,NM_000249.4(MLH1):c.1609del (p.Gln537fs),chr3,37040236,,,,,,
+PMS2,NM_000535.7(PMS2):c.741del (p.Ser248fs),chr7,5997388,,,,,,

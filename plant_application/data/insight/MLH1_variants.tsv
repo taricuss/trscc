@@ -1,0 +1,5 @@
+# InSIGHT MLH1_variants variants
+# Download from: https://insight-database.org/downloads/MLH1_variants.tsv
+# Or visit: https://insight-database.org
+# Manual download may be required
+# Columns expected: Gene, cDNA_change, Protein_change, Class, Family_count
